@@ -469,7 +469,14 @@ public class GPUOverclockController
             previousFrequency = frequency;
 
             if (!live.IsEditable)
+            {
+                if (frequency != live.FrequencyMhz)
+                {
+                    Log.Instance.Trace($"Rejected an edit to driver-controlled V/F point. [index={live.Index}]");
+                    return false;
+                }
                 continue;
+            }
 
             var offset = frequency - live.StockFrequencyMhz;
             if (offset < live.MinimumOffsetMhz || offset > live.MaximumOffsetMhz)
@@ -680,8 +687,6 @@ public class GPUOverclockController
         {
             var firstIndex = graphicsRange.FirstPointIndex;
             var lastIndex = graphicsRange.LastPointIndex;
-            var minDeltaKhz = graphicsRange.MinimumInkHz;
-
             var (points, structVersion) = ReadCurvePoints(gpu);
             var currentDeltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
 
@@ -708,9 +713,6 @@ public class GPUOverclockController
             var coreOffsetKhz = coreDeltaKhz * clockMultiplier;
 
             var anchorIndex = voltageMv > 0 ? FindCurvePoint(points, firstIndex, lastIndex, voltageMv) : -1;
-            var anchorStockKhz = anchorIndex >= 0 ? GetStockFrequencyKhz(points, currentDeltas, anchorIndex) : 0;
-            var anchorTargetKhz = anchorStockKhz + coreOffsetKhz;
-
             if (voltageMv > 0 && anchorIndex < 0)
                 Log.Instance.Trace($"No V/F curve point at or above {voltageMv} mV in the {firstIndex}..{lastIndex} range, voltage cap/lock not applied.");
 
