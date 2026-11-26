@@ -6,4 +6,4 @@ public sealed record GPUOverclockTelemetry(
     int CoreClockMhz,
     int MemoryClockMhz,
     int TemperatureCelsius,
-    double? CoreVoltageVolts);
+    ulong? CoreVoltageMicrovolts);
