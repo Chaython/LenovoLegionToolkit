@@ -288,6 +288,14 @@ public class GPUOverclockController
         if (livePoints.Length == 0 || livePoints.Length != editedPoints.Count)
             return false;
 
+        var gpu = NVAPI.GetGPU();
+        var gpuId = gpu is null ? null : NVAPI.GetGPUId(gpu);
+        if (string.IsNullOrWhiteSpace(gpuId))
+        {
+            Log.Instance.Trace("Cannot save a custom V/F curve without a stable GPU identifier.");
+            return false;
+        }
+
         var offsets = new System.Collections.Generic.List<GPUVoltageCurveOffset>();
         var previousFrequency = int.MinValue;
 
@@ -326,6 +334,7 @@ public class GPUOverclockController
         }
 
         _settings.Store.VoltageCurve = offsets;
+        _settings.Store.VoltageCurveGpuId = gpuId;
         _settings.SynchronizeStore();
         Log.Instance.Trace($"Saved custom GPU V/F curve. [editablePoints={offsets.Count}]");
         return true;
@@ -334,6 +343,7 @@ public class GPUOverclockController
     public void ClearVoltageCurve()
     {
         _settings.Store.VoltageCurve = [];
+        _settings.Store.VoltageCurveGpuId = null;
         _settings.SynchronizeStore();
         Log.Instance.Trace("Cleared custom GPU V/F curve.");
     }
@@ -443,6 +453,18 @@ public class GPUOverclockController
         if (memoryDeltaMhz != info.MemoryDeltaMhz)
             Log.Instance.Trace($"Clamped memory offset {info.MemoryDeltaMhz} MHz to {memoryDeltaMhz} MHz (driver range {minMemoryDeltaMhz}..{maxMemoryDeltaMhz} MHz).");
 
+        var savedCurve = _settings.Store.VoltageCurve;
+        if (savedCurve.Count > 0)
+        {
+            var currentGpuId = NVAPI.GetGPUId(gpu);
+            if (string.IsNullOrWhiteSpace(currentGpuId) ||
+                !string.Equals(currentGpuId, _settings.Store.VoltageCurveGpuId, StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Instance.Trace("Saved V/F curve belongs to a different GPU; refusing to apply it.");
+                return false;
+            }
+        }
+
         var (graphicsRange, memoryRange) = GetCurveRanges(gpu);
         if (graphicsRange is null)
         {
@@ -451,14 +473,14 @@ public class GPUOverclockController
             var legacyApplied = ApplyPerformanceStates(gpu, coreDeltaMhz * 1000, memoryDeltaMhz * 1000);
             var voltageRequested = info.VoltageLockMv > 0 || info.VoltageCapMv > 0;
 
-            var customCurveRequested = _settings.Store.VoltageCurve.Count > 0;
+            var customCurveRequested = savedCurve.Count > 0;
             if (customCurveRequested)
                 Log.Instance.Trace("A custom V/F curve is saved, but this GPU exposes no editable curve interface.");
 
             return legacyApplied && !voltageRequested && !customCurveRequested;
         }
 
-        return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, maxCoreDeltaMhz * 1000, _settings.Store.VoltageCurve);
+        return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, maxCoreDeltaMhz * 1000, savedCurve);
     }
 
     private static bool ApplyPerformanceStates(PhysicalGPU gpu, int coreDeltaKhz, int memoryDeltaKhz)
