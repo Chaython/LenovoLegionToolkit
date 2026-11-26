@@ -714,125 +714,116 @@ public class GPUOverclockController
             if (voltageMv > 0 && anchorIndex < 0)
                 Log.Instance.Trace($"No V/F curve point at or above {voltageMv} mV in the {firstIndex}..{lastIndex} range, voltage cap/lock not applied.");
 
-            var deltas = new PrivateClockBoostTableV1.GPUDelta[currentDeltas.Length];
-            var flattenedCount = 0;
-            var flattenDepthKhz = 0;
+            var deltas = currentDeltas.ToArray();
+            var expectedCurve = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(lastIndex - firstIndex + 1);
+            var minimumOffsetMhz = (int)Math.Ceiling(graphicsRange.MinimumInkHz / 1000d);
+            var maximumOffsetMhz = (int)Math.Floor(graphicsRange.MaximumInkHz / 1000d);
 
-            for (var i = 0; i < deltas.Length; i++)
+            // Construct one effective native curve for every path (custom curve,
+            // global offset, voltage cap, or voltage lock). The editor uses this
+            // same voltage-limit transform; no second cap-specific table algorithm
+            // is allowed to silently produce a different curve.
+            for (var i = firstIndex; i <= lastIndex; i++)
             {
-                if (savedCurve is { Count: > 0 } &&
-                    i >= firstIndex && i <= lastIndex &&
-                    currentDeltas[i].PointMode != 0)
-                {
-                    // Keep driver-controlled V/F points byte-for-byte unchanged.
-                    deltas[i] = currentDeltas[i];
+                if (points[i].VoltageInMicroV == 0)
                     continue;
-                }
 
-                var deltaKhz = currentDeltas[i].FrequencyDeltaInkHz;
+                var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, i);
+                var editable = currentDeltas[i].PointMode == 0;
+                var targetFrequencyKhz = (int)points[i].FrequencyInkHz;
 
-                if (memoryRange is not null && i >= memoryRange.Value.FirstPointIndex && i <= memoryRange.Value.LastPointIndex)
+                if (editable)
                 {
-                    deltaKhz = memoryDeltaKhz;
-                }
-                else if (i >= firstIndex && i <= lastIndex)
-                {
-                    deltaKhz = coreOffsetKhz;
-
-                    if (anchorIndex >= 0)
+                    var savedPoint = savedCurve?.FirstOrDefault(p => p.Index == i);
+                    int offsetKhz;
+                    if (savedCurve is { Count: > 0 })
                     {
-                        var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, i);
-                        if (stockFrequencyKhz > anchorStockKhz)
+                        if (savedPoint is null || savedPoint.VoltageMv != (int)points[i].VoltageInMilliV)
                         {
-                            deltaKhz = Math.Max(anchorTargetKhz - stockFrequencyKhz, minDeltaKhz);
-                            flattenedCount++;
-                            flattenDepthKhz = Math.Min(flattenDepthKhz, deltaKhz - coreOffsetKhz);
+                            Log.Instance.Trace($"Saved V/F curve is incomplete or no longer matches the active driver curve. [index={i}]");
+                            return false;
                         }
+
+                        offsetKhz = savedPoint.OffsetMhz * 1000;
                     }
-                }
-
-                deltas[i] = new PrivateClockBoostTableV1.GPUDelta(deltaKhz);
-            }
-
-            if (savedCurve is { Count: > 0 })
-            {
-                foreach (var savedPoint in savedCurve)
-                {
-                    var index = savedPoint.Index;
-                    if (index < firstIndex || index > lastIndex || index >= available ||
-                        points[index].VoltageInMicroV == 0 ||
-                        (int)points[index].VoltageInMilliV != savedPoint.VoltageMv ||
-                        currentDeltas[index].PointMode != 0)
+                    else
                     {
-                        Log.Instance.Trace($"Saved V/F point no longer matches the active driver curve. [index={index}, voltage={savedPoint.VoltageMv}]");
-                        return false;
+                        offsetKhz = coreOffsetKhz;
                     }
 
-                    var offsetKhz = savedPoint.OffsetMhz * 1000;
                     if (offsetKhz < graphicsRange.MinimumInkHz || offsetKhz > graphicsRange.MaximumInkHz)
                     {
-                        Log.Instance.Trace($"Saved V/F offset is outside the current driver range. [index={index}, offset={savedPoint.OffsetMhz}]");
+                        Log.Instance.Trace($"Requested V/F offset is outside the current driver range. [index={i}, offset={offsetKhz}]");
                         return false;
                     }
 
-                    deltas[index] = new PrivateClockBoostTableV1.GPUDelta(offsetKhz);
+                    deltas[i] = new PrivateClockBoostTableV1.GPUDelta(offsetKhz);
+                    targetFrequencyKhz = stockFrequencyKhz + offsetKhz;
                 }
 
-                // Build the same effective curve the editor previews, then write
-                // those exact point offsets to the driver table.
-                if (anchorIndex >= 0)
+                var stockMhz = stockFrequencyKhz / 1000;
+                var targetMhz = targetFrequencyKhz / 1000;
+                expectedCurve.Add(new GPUVoltageCurvePoint(
+                    i, (int)points[i].VoltageInMilliV, targetMhz, stockMhz,
+                    targetMhz - stockMhz, editable, minimumOffsetMhz, maximumOffsetMhz));
+            }
+
+            if (memoryRange is not null)
+            {
+                for (var i = memoryRange.Value.FirstPointIndex;
+                     i <= memoryRange.Value.LastPointIndex && i < deltas.Length; i++)
                 {
-                    var minimumOffsetMhz = (int)Math.Ceiling(graphicsRange.MinimumInkHz / 1000d);
-                    var maximumOffsetMhz = (int)Math.Floor(graphicsRange.MaximumInkHz / 1000d);
-                    var effectiveCurve = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(lastIndex - firstIndex + 1);
-                    for (var i = firstIndex; i <= lastIndex; i++)
-                    {
-                        if (points[i].VoltageInMicroV == 0)
-                            continue;
-
-                        var stockMhz = GetStockFrequencyKhz(points, currentDeltas, i) / 1000;
-                        var targetMhz = (stockMhz * 1000 + deltas[i].FrequencyDeltaInkHz) / 1000;
-                        effectiveCurve.Add(new GPUVoltageCurvePoint(
-                            i,
-                            (int)points[i].VoltageInMilliV,
-                            targetMhz,
-                            stockMhz,
-                            targetMhz - stockMhz,
-                            currentDeltas[i].PointMode == 0,
-                            minimumOffsetMhz,
-                            maximumOffsetMhz));
-                    }
-
-                    if (!TryApplyVoltageLimitToCurve(effectiveCurve, voltageMv, out var cappedCurve, out var capError))
-                    {
-                        Log.Instance.Trace($"{capError}");
-                        return false;
-                    }
-
-                    foreach (var point in cappedCurve)
-                    {
-                        var index = point.Index;
-                        var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, index);
-                        var targetFrequencyKhz = point.FrequencyMhz * 1000;
-                        deltas[index] = new PrivateClockBoostTableV1.GPUDelta(targetFrequencyKhz - stockFrequencyKhz);
-                    }
-
-                    anchorTargetKhz = cappedCurve.First(p => p.Index == anchorIndex).FrequencyMhz * 1000;
-                    flattenedCount = cappedCurve.Count(p => p.Index > anchorIndex && p.IsEditable);
+                    if (currentDeltas[i].PointMode == 0)
+                        deltas[i] = new PrivateClockBoostTableV1.GPUDelta(memoryDeltaKhz);
                 }
+            }
 
-                var previousFrequencyKhz = int.MinValue;
-                for (var i = firstIndex; i <= lastIndex; i++)
+            if (voltageMv > 0)
+            {
+                if (anchorIndex < 0)
                 {
-                    var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, i);
-                    var targetFrequencyKhz = stockFrequencyKhz + deltas[i].FrequencyDeltaInkHz;
-                    if (targetFrequencyKhz < previousFrequencyKhz)
-                    {
-                        Log.Instance.Trace($"Saved V/F curve would produce a descending frequency segment. [index={i}]");
-                        return false;
-                    }
-                    previousFrequencyKhz = targetFrequencyKhz;
+                    Log.Instance.Trace($"No V/F curve point at or above {voltageMv} mV; voltage cap/lock cannot be represented.");
+                    return false;
                 }
+
+                if (!TryApplyVoltageLimitToCurve(expectedCurve, voltageMv, out var cappedCurve, out var capError))
+                {
+                    Log.Instance.Trace(capError);
+                    return false;
+                }
+
+                expectedCurve = cappedCurve.ToList();
+            }
+
+            // Materialize the exact previewed MHz values back into the native
+            // driver table. Fixed points remain untouched by the shared transform.
+            foreach (var point in expectedCurve)
+            {
+                if (!point.IsEditable)
+                    continue;
+
+                var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, point.Index);
+                var targetFrequencyKhz = point.FrequencyMhz * 1000;
+                var offsetKhz = targetFrequencyKhz - stockFrequencyKhz;
+                if (offsetKhz < graphicsRange.MinimumInkHz || offsetKhz > graphicsRange.MaximumInkHz)
+                {
+                    Log.Instance.Trace($"Effective V/F curve exceeds the driver range. [index={point.Index}, offset={offsetKhz}]");
+                    return false;
+                }
+
+                deltas[point.Index] = new PrivateClockBoostTableV1.GPUDelta(offsetKhz);
+            }
+
+            var previousFrequencyKhz = int.MinValue;
+            foreach (var point in expectedCurve)
+            {
+                var targetFrequencyKhz = point.FrequencyMhz * 1000;
+                if (targetFrequencyKhz < previousFrequencyKhz)
+                {
+                    Log.Instance.Trace($"Effective V/F curve would produce a descending frequency segment. [index={point.Index}]");
+                    return false;
+                }
+                previousFrequencyKhz = targetFrequencyKhz;
             }
 
             GPUApi.SetClockBoostTable(gpu.Handle, new PrivateClockBoostTableV1(deltas), structVersion);
@@ -853,8 +844,24 @@ public class GPUOverclockController
                 }
             }
 
+            // Verify the resulting V/F frequencies as well as the raw boost deltas.
+            var (readBackPoints, _) = ReadCurvePoints(gpu);
+            foreach (var expected in expectedCurve)
+            {
+                if (expected.Index >= readBackPoints.Length ||
+                    (int)readBackPoints[expected.Index].VoltageInMilliV != expected.VoltageMv ||
+                    (int)readBackPoints[expected.Index].FrequencyInkHz / 1000 != expected.FrequencyMhz)
+                {
+                    var actual = expected.Index < readBackPoints.Length
+                        ? (int)readBackPoints[expected.Index].FrequencyInkHz / 1000
+                        : -1;
+                    Log.Instance.Trace($"NVIDIA driver V/F readback does not match the effective preview. [index={expected.Index}, voltage={expected.VoltageMv}, expectedMHz={expected.FrequencyMhz}, actualMHz={actual}]");
+                    return false;
+                }
+            }
+
             if (anchorIndex >= 0)
-                Log.Instance.Trace($"Flattened V/F curve at point #{anchorIndex} ({points[anchorIndex].VoltageInMilliV} mV, {anchorTargetKhz / (1000 * clockMultiplier)} MHz): {flattenedCount} points, depth {flattenDepthKhz / (1000 * clockMultiplier)} MHz.");
+                Log.Instance.Trace($"Applied and verified the shared voltage-limited V/F curve at point #{anchorIndex}; checked {expectedCurve.Count} native points.");
 
             var lockRequested = info.VoltageLockMv > 0 && anchorIndex >= 0;
             var lockApplied = SetVoltageLock(gpu.Handle, lockRequested ? points[anchorIndex].VoltageInMicroV : 0, lockRequested);
