@@ -97,6 +97,21 @@ public class GPUOverclockController
             var utilization = Math.Clamp(Math.Max(gpu.UsageInformation.GPU.Percentage, gpu.UsageInformation.VideoEngine.Percentage), 0, 100);
             var coreClock = (int)gpu.CurrentClockFrequencies.GraphicsClock.Frequency / 1000;
             var memoryClock = (int)gpu.CurrentClockFrequencies.MemoryClock.Frequency / 1000;
+            switch (gpu.MemoryInformation.RAMType)
+            {
+                case GPUMemoryType.GDDR5:
+                case GPUMemoryType.GDDR5X:
+                    memoryClock /= 2;
+                    break;
+                case GPUMemoryType.GDDR6:
+                case GPUMemoryType.GDDR6X:
+                    memoryClock /= 4;
+                    break;
+                case GPUMemoryType.GDDR7:
+                    memoryClock /= 8;
+                    break;
+            }
+
             var temperature = gpu.ThermalInformation.ThermalSensors.FirstOrDefault()?.CurrentTemperature ?? -1;
 
             return new GPUOverclockTelemetry(utilization, coreClock, memoryClock, temperature);
@@ -125,9 +140,14 @@ public class GPUOverclockController
             .ToList();
         var previousGpuId = _settings.Store.VoltageCurveGpuId;
 
-        var curveSaved = resetCurve || editedPoints.Count == 0 || SaveVoltageCurve(editedPoints);
-        if (!curveSaved)
+        if (resetCurve)
+        {
+            ClearVoltageCurve();
+        }
+        else if (editedPoints.Count > 0 && !SaveVoltageCurve(editedPoints))
+        {
             return false;
+        }
 
         SaveState(true, info);
         var applied = await ApplyStateAsync().ConfigureAwait(false);
@@ -728,17 +748,19 @@ public class GPUOverclockController
 
             GPUApi.SetClockBoostTable(gpu.Handle, new PrivateClockBoostTableV1(deltas), structVersion);
 
-            if (savedCurve is { Count: > 0 })
+            var appliedDeltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
+            if (appliedDeltas.Length != deltas.Length)
             {
-                var appliedDeltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
-                foreach (var savedPoint in savedCurve)
+                Log.Instance.Trace("NVIDIA driver returned a different V/F table size after applying the curve.");
+                return false;
+            }
+
+            for (var i = 0; i < deltas.Length; i++)
+            {
+                if (appliedDeltas[i].FrequencyDeltaInkHz != deltas[i].FrequencyDeltaInkHz)
                 {
-                    if (savedPoint.Index >= appliedDeltas.Length ||
-                        appliedDeltas[savedPoint.Index].FrequencyDeltaInkHz != deltas[savedPoint.Index].FrequencyDeltaInkHz)
-                    {
-                        Log.Instance.Trace($"NVIDIA driver did not retain the requested V/F point. [index={savedPoint.Index}]");
-                        return false;
-                    }
+                    Log.Instance.Trace($"NVIDIA driver did not retain the requested V/F delta. [index={i}, requested={deltas[i].FrequencyDeltaInkHz}, actual={appliedDeltas[i].FrequencyDeltaInkHz}]");
+                    return false;
                 }
             }
 
