@@ -231,7 +231,7 @@
                     <!-- Editable NVIDIA voltage/frequency curve. Keep this section flat
                          rather than wrapping it in CardControl, which adds a large filled panel. -->
                     <TextBlock Text="Voltage / Frequency Curve" FontWeight="SemiBold" FontSize="14" Margin="0,16,0,8" />
-                    <StackPanel HorizontalAlignment="Stretch" Margin="0,0,0,8">
+                    <StackPanel x:Name="_voltageCurveSection" HorizontalAlignment="Stretch" Margin="0,0,0,8">
                         <TextBlock
                             FontWeight="SemiBold"
                             Margin="0,0,0,4"
