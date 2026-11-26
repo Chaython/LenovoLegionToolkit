@@ -684,7 +684,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
         _curveReset = false;
         _curveStatus.Text = requested == frequency
             ? $"Shifted the selected group to {frequency} MHz at its handle. Preview only; Apply to send all grouped driver points."
-            : $"Clamped requested {requested} MHz to {frequency} MHz to respect driver limits and neighboring points across the group.";
+            : $"Adjusted the requested {requested} MHz to {frequency} MHz to preserve driver limits and a monotonic transition across neighboring points.";
         DrawVoltageCurve();
     }
 
