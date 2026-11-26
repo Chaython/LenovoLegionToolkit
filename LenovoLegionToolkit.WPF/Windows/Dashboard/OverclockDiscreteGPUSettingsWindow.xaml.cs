@@ -230,13 +230,25 @@ public partial class OverclockDiscreteGPUSettingsWindow
         _curveStatus.Text = $"Preview includes a {voltageLimit} mV voltage limit. The curve shown is the curve that will be saved and sent to the driver.";
     }
 
-    private void CaptureUncappedCurveEdits()
+    // Merge only points changed by the user's edit into the unconstrained
+    // proposal, then reapply the cap. This preserves the original curve beyond
+    // the cap anchor while ensuring the visible preview never shows an edit
+    // that the driver-side voltage-limit transform will later discard.
+    private void CaptureUncappedCurveEdits(IReadOnlyList<GPUVoltageCurvePoint> beforeEdit)
     {
-        if (GetActiveVoltageLimitMv() > 0 || _voltageCurvePoints.Count == 0)
+        if (_voltageCurvePoints.Count == 0 || beforeEdit.Count != _voltageCurvePoints.Count ||
+            _uncappedVoltageCurvePoints.Count != _voltageCurvePoints.Count)
             return;
 
-        _uncappedVoltageCurvePoints.Clear();
-        _uncappedVoltageCurvePoints.AddRange(_voltageCurvePoints);
+        for (var i = 0; i < _voltageCurvePoints.Count; i++)
+        {
+            var edited = _voltageCurvePoints[i];
+            var previous = beforeEdit[i];
+            if (edited.FrequencyMhz == previous.FrequencyMhz && edited.OffsetMhz == previous.OffsetMhz)
+                continue;
+
+            _uncappedVoltageCurvePoints[i] = edited;
+        }
     }
 
     private void VoltageCapSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -498,6 +510,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return;
         }
 
+        var beforeEdit = _voltageCurvePoints.ToArray();
         var tail = _voltageCurvePoints.Skip(_selectedCurvePoint).ToList();
         if (tail.Any(point => !point.IsEditable))
         {
@@ -528,7 +541,8 @@ public partial class OverclockDiscreteGPUSettingsWindow
         }
 
         _curveReset = false;
-        CaptureUncappedCurveEdits();
+        CaptureUncappedCurveEdits(beforeEdit);
+        RefreshVoltageCurvePreview();
         _curveStatus.Text = $"Flattened {_voltageCurvePoints.Count - _selectedCurvePoint} curve points from " +
             $"{_voltageCurvePoints[_selectedCurvePoint].VoltageMv} mV at {targetFrequency} MHz. Preview only; Apply to send it to the driver.";
         UpdateCurvePointDetails();
@@ -587,9 +601,11 @@ public partial class OverclockDiscreteGPUSettingsWindow
         var bounds = _dragCurveBounds ?? GetCurveBounds();
         var clampedY = Math.Clamp(mouseY, bounds.Top, bounds.Top + bounds.Height);
         var targetFrequency = (int)Math.Round(MapYToFrequency(clampedY, bounds));
+        var beforeEdit = _voltageCurvePoints.ToArray();
         ApplySelectedGroupFrequency(targetFrequency);
         _curveReset = false;
-        CaptureUncappedCurveEdits();
+        CaptureUncappedCurveEdits(beforeEdit);
+        RefreshVoltageCurvePreview();
         UpdateCurvePointDetails();
         DrawVoltageCurve();
     }
@@ -754,9 +770,11 @@ public partial class OverclockDiscreteGPUSettingsWindow
         }
 
         var requested = frequency;
+        var beforeEdit = _voltageCurvePoints.ToArray();
         frequency = ApplySelectedGroupFrequency(frequency);
         _curveReset = false;
-        CaptureUncappedCurveEdits();
+        CaptureUncappedCurveEdits(beforeEdit);
+        RefreshVoltageCurvePreview();
         _curveStatus.Text = requested == frequency
             ? $"Shifted the selected group to {frequency} MHz at its handle. Preview only; Apply to send all grouped driver points."
             : $"Adjusted the requested {requested} MHz to {frequency} MHz to preserve driver limits and a monotonic transition across neighboring points.";
