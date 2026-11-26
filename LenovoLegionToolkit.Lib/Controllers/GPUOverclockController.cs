@@ -545,6 +545,15 @@ public class GPUOverclockController
 
             for (var i = 0; i < deltas.Length; i++)
             {
+                if (savedCurve is { Count: > 0 } &&
+                    i >= firstIndex && i <= lastIndex &&
+                    currentDeltas[i].PointMode != 0)
+                {
+                    // Keep driver-controlled V/F points byte-for-byte unchanged.
+                    deltas[i] = currentDeltas[i];
+                    continue;
+                }
+
                 var deltaKhz = currentDeltas[i].FrequencyDeltaInkHz;
 
                 if (memoryRange is not null && i >= memoryRange.Value.FirstPointIndex && i <= memoryRange.Value.LastPointIndex)
@@ -602,7 +611,15 @@ public class GPUOverclockController
                         var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, i);
                         var targetFrequencyKhz = stockFrequencyKhz + deltas[i].FrequencyDeltaInkHz;
                         if (targetFrequencyKhz > anchorTargetKhz)
+                        {
+                            if (currentDeltas[i].PointMode != 0)
+                            {
+                                Log.Instance.Trace($"Voltage cap cannot be enforced because driver point #{i} is not editable.");
+                                return false;
+                            }
+
                             deltas[i] = new PrivateClockBoostTableV1.GPUDelta(Math.Max(anchorTargetKhz - stockFrequencyKhz, minDeltaKhz));
+                        }
                     }
                 }
 
