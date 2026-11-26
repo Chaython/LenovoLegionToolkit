@@ -86,7 +86,13 @@ public partial class OverclockDiscreteGPUSettingsWindow
         _curveStatus.Text = curve.Length == 0
             ? "No editable NVIDIA voltage/frequency curve is available on this GPU."
             : $"{curve.Length} driver points loaded. Solid points are editable; hollow points are driver-controlled.";
-        _voltageCurveCanvas.IsEnabled = curve.Any(p => p.IsEditable);
+        var editablePointCount = curve.Count(p => p.IsEditable);
+        _curvePointCountSlider.Minimum = Math.Min(8, Math.Max(1, editablePointCount));
+        _curvePointCountSlider.Maximum = Math.Max(_curvePointCountSlider.Minimum, editablePointCount);
+        _curvePointCountSlider.Value = Math.Min(32, editablePointCount);
+        _curvePointCountSlider.IsEnabled = editablePointCount > _curvePointCountSlider.Minimum;
+        UpdateCurvePointCountText();
+        _voltageCurveCanvas.IsEnabled = editablePointCount > 0;
         DrawVoltageCurve();
 
         _contentGrid.IsEnabled = true;
@@ -326,6 +332,57 @@ public partial class OverclockDiscreteGPUSettingsWindow
         }
     }
 
+    private void CurvePointCountSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_curvePointCountValue is null || _voltageCurvePoints is null)
+            return;
+
+        var visible = GetVisibleEditablePointIndices();
+        if (_selectedCurvePoint >= 0 && !visible.Contains(_selectedCurvePoint))
+            _selectedCurvePoint = -1;
+
+        UpdateCurvePointCountText();
+        DrawVoltageCurve();
+    }
+
+    private void UpdateCurvePointCountText()
+    {
+        if (_curvePointCountValue is null || _curvePointCountSlider is null)
+            return;
+
+        var total = _voltageCurvePoints.Count(p => p.IsEditable);
+        var visible = Math.Min(total, (int)Math.Round(_curvePointCountSlider.Value));
+        _curvePointCountValue.Text = $"{visible} / {total} points";
+    }
+
+    private HashSet<int> GetVisibleEditablePointIndices()
+    {
+        var editableIndices = _voltageCurvePoints
+            .Select((point, index) => (point, index))
+            .Where(item => item.point.IsEditable)
+            .Select(item => item.index)
+            .ToArray();
+
+        var visibleCount = Math.Min(editableIndices.Length, Math.Max(1, (int)Math.Round(_curvePointCountSlider?.Value ?? editableIndices.Length)));
+        var visible = new HashSet<int>();
+        if (visibleCount == 0)
+            return visible;
+
+        if (visibleCount == 1)
+        {
+            visible.Add(editableIndices[editableIndices.Length / 2]);
+            return visible;
+        }
+
+        for (var i = 0; i < visibleCount; i++)
+        {
+            var sourceIndex = (int)Math.Round(i * (editableIndices.Length - 1d) / (visibleCount - 1d));
+            visible.Add(editableIndices[sourceIndex]);
+        }
+
+        return visible;
+    }
+
     private void VoltageCurveCanvas_OnSizeChanged(object sender, SizeChangedEventArgs e) => DrawVoltageCurve();
 
     private void VoltageCurveCanvas_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -430,7 +487,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
         for (var i = 0; i < _voltageCurvePoints.Count; i++)
         {
             var point = _voltageCurvePoints[i];
-            if (!point.IsEditable)
+            if (!point.IsEditable || !GetVisibleEditablePointIndices().Contains(i))
                 continue;
 
             var x = MapVoltageToX(point.VoltageMv, bounds);
@@ -552,9 +609,13 @@ public partial class OverclockDiscreteGPUSettingsWindow
             curve.Points.Add(new Point(MapVoltageToX(point.VoltageMv, bounds), MapFrequencyToY(point.FrequencyMhz, bounds)));
         _voltageCurveCanvas.Children.Add(curve);
 
+        var visibleEditablePoints = GetVisibleEditablePointIndices();
         for (var i = 0; i < _voltageCurvePoints.Count; i++)
         {
             var point = _voltageCurvePoints[i];
+            if (point.IsEditable && !visibleEditablePoints.Contains(i) && i != _selectedCurvePoint)
+                continue;
+
             var selected = i == _selectedCurvePoint;
             var marker = new Ellipse
             {
