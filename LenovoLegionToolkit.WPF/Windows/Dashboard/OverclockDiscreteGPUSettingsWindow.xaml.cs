@@ -24,6 +24,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
     private int _selectedCurvePoint = -1;
     private bool _isDraggingCurvePoint;
     private bool _curveReset;
+    private (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency)? _dragCurveBounds;
 
     public OverclockDiscreteGPUSettingsWindow()
     {
@@ -249,6 +250,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return;
 
         _selectedCurvePoint = nearest;
+        _dragCurveBounds = GetCurveBounds();
         _isDraggingCurvePoint = true;
         _voltageCurveCanvas.CaptureMouse();
         UpdateSelectedCurvePoint(position.Y);
@@ -269,6 +271,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return;
 
         _isDraggingCurvePoint = false;
+        _dragCurveBounds = null;
         _voltageCurveCanvas.ReleaseMouseCapture();
         DrawVoltageCurve();
     }
@@ -332,6 +335,9 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
     private (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency) GetCurveBounds()
     {
+        if (_isDraggingCurvePoint && _dragCurveBounds.HasValue)
+            return _dragCurveBounds.Value;
+
         var width = Math.Max(200, _voltageCurveCanvas.ActualWidth > 0 ? _voltageCurveCanvas.ActualWidth : _voltageCurveCanvas.Width);
         var height = Math.Max(150, _voltageCurveCanvas.ActualHeight > 0 ? _voltageCurveCanvas.ActualHeight : _voltageCurveCanvas.Height);
         var minVoltage = _voltageCurvePoints.Count == 0 ? 0 : _voltageCurvePoints.Min(p => p.VoltageMv);
@@ -461,6 +467,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
         }
 
         _selectedCurvePoint = -1;
+        _dragCurveBounds = null;
         _curveStatus.Text = "Custom curve cleared. The standard GPU curve and core offset will be restored when applied.";
         DrawVoltageCurve();
         if (Save())
