@@ -713,7 +713,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
         }
 
         if (_selectedCurvePoint >= 0 && _selectedCurvePoint < _voltageCurvePoints.Count &&
-            _voltageCurvePoints[_selectedCurvePoint].IsEditable && !_isDraggingCurvePoint)
+            _voltageCurvePoints[_selectedCurvePoint].IsEditable)
         {
             var selected = _voltageCurvePoints[_selectedCurvePoint];
             var editor = new TextBox
