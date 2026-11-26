@@ -255,7 +255,7 @@
                                 Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                 Text="Preview: dashed line is the stock curve; solid line is your proposed curve. Changes are not applied until you confirm." />
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" VerticalAlignment="Center">
-                                <TextBlock VerticalAlignment="Center" Text="Editable handles:" />
+                                <TextBlock VerticalAlignment="Center" Text="Visible handles:" />
                                 <Slider
                                     x:Name="_curvePointCountSlider"
                                     Width="180"
