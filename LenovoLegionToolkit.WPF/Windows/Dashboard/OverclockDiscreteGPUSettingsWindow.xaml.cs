@@ -484,10 +484,11 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
         var nearestIndex = -1;
         var nearestDistance = 13d;
+        var visibleEditablePoints = GetVisibleEditablePointIndices();
         for (var i = 0; i < _voltageCurvePoints.Count; i++)
         {
             var point = _voltageCurvePoints[i];
-            if (!point.IsEditable || !GetVisibleEditablePointIndices().Contains(i))
+            if (!point.IsEditable || !visibleEditablePoints.Contains(i))
                 continue;
 
             var x = MapVoltageToX(point.VoltageMv, bounds);
