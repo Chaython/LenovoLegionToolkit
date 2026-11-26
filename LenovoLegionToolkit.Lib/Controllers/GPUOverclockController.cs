@@ -118,7 +118,7 @@ public class GPUOverclockController
         }
         catch (Exception ex)
         {
-            Log.Instance.Trace("Failed to read GPU overclock telemetry.", ex);
+            Log.Instance.Trace($"Failed to read GPU overclock telemetry.", ex);
             return null;
         }
     }
@@ -357,7 +357,7 @@ public class GPUOverclockController
         }
         catch (Exception ex)
         {
-            Log.Instance.Trace("Failed to read the GPU voltage/frequency curve.", ex);
+            Log.Instance.Trace($"Failed to read the GPU voltage/frequency curve.", ex);
             return [];
         }
     }
@@ -379,7 +379,7 @@ public class GPUOverclockController
         var gpuId = gpu is null ? null : NVAPI.GetGPUId(gpu);
         if (string.IsNullOrWhiteSpace(gpuId))
         {
-            Log.Instance.Trace("Cannot save a custom V/F curve without a stable GPU identifier.");
+            Log.Instance.Trace($"Cannot save a custom V/F curve without a stable GPU identifier.");
             return false;
         }
 
@@ -432,7 +432,7 @@ public class GPUOverclockController
         _settings.Store.VoltageCurve = [];
         _settings.Store.VoltageCurveGpuId = null;
         _settings.SynchronizeStore();
-        Log.Instance.Trace("Cleared custom GPU V/F curve.");
+        Log.Instance.Trace($"Cleared custom GPU V/F curve.");
     }
 
     private const int FallbackMinCoreDeltaMhz = -500;
@@ -547,7 +547,7 @@ public class GPUOverclockController
             if (string.IsNullOrWhiteSpace(currentGpuId) ||
                 !string.Equals(currentGpuId, _settings.Store.VoltageCurveGpuId, StringComparison.OrdinalIgnoreCase))
             {
-                Log.Instance.Trace("Saved V/F curve belongs to a different GPU; refusing to apply it.");
+                Log.Instance.Trace($"Saved V/F curve belongs to a different GPU; refusing to apply it.");
                 return false;
             }
         }
@@ -562,7 +562,7 @@ public class GPUOverclockController
 
             var customCurveRequested = savedCurve.Count > 0;
             if (customCurveRequested)
-                Log.Instance.Trace("A custom V/F curve is saved, but this GPU exposes no editable curve interface.");
+                Log.Instance.Trace($"A custom V/F curve is saved, but this GPU exposes no editable curve interface.");
 
             return legacyApplied && !voltageRequested && !customCurveRequested;
         }
@@ -751,7 +751,7 @@ public class GPUOverclockController
             var appliedDeltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
             if (appliedDeltas.Length != deltas.Length)
             {
-                Log.Instance.Trace("NVIDIA driver returned a different V/F table size after applying the curve.");
+                Log.Instance.Trace($"NVIDIA driver returned a different V/F table size after applying the curve.");
                 return false;
             }
 
