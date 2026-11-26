@@ -680,36 +680,19 @@ public partial class OverclockDiscreteGPUSettingsWindow
         if (groupStart < 0 || groupEnd < groupStart)
             return handle.FrequencyMhz;
 
-        // Fade the offset across one group-width on either side. Points in the
-        // selected group retain the full requested movement; adjacent groups are
-        // adjusted only near their shared boundaries.
-        var transitionWidth = Math.Max(1, group.Count);
-        var weights = new Dictionary<int, double>();
-        for (var position = 0; position < editableIndices.Length; position++)
-        {
-            double weight;
-            if (position >= groupStart && position <= groupEnd)
-                weight = 1d;
-            else if (position < groupStart)
-                weight = Math.Max(0d, 1d - (groupStart - position) / (double)(transitionWidth + 1));
-            else
-                weight = Math.Max(0d, 1d - (position - groupEnd) / (double)(transitionWidth + 1));
-
-            if (weight > 0d)
-                weights[editableIndices[position]] = weight;
-        }
-
         bool TryBuildCurve(int magnitude, out GPUVoltageCurvePoint[] candidate)
         {
             candidate = _voltageCurvePoints.ToArray();
             var delta = Math.Sign(requestedDelta) * magnitude;
-            foreach (var (index, weight) in weights)
+
+            // Move every native point represented by the selected handle together.
+            for (var position = groupStart; position <= groupEnd; position++)
             {
+                var index = editableIndices[position];
                 var point = candidate[index];
-                var frequency = point.FrequencyMhz + (int)Math.Round(delta * weight, MidpointRounding.AwayFromZero);
-                var minimum = point.StockFrequencyMhz + point.MinimumOffsetMhz;
-                var maximum = point.StockFrequencyMhz + point.MaximumOffsetMhz;
-                if (frequency < minimum || frequency > maximum)
+                var frequency = point.FrequencyMhz + delta;
+                if (frequency < point.StockFrequencyMhz + point.MinimumOffsetMhz ||
+                    frequency > point.StockFrequencyMhz + point.MaximumOffsetMhz)
                     return false;
 
                 candidate[index] = point with
@@ -719,8 +702,61 @@ public partial class OverclockDiscreteGPUSettingsWindow
                 };
             }
 
-            // The controller requires a non-decreasing native driver table.
-            // Check the complete table, including non-editable driver points.
+            // Match Afterburner's curve behavior: raising a point creates a
+            // flat segment to the right until the untouched curve catches up.
+            // Lowering a point flattens the preceding segment to the left.
+            // Tapering back to the original curve on both sides made every
+            // positive edit descend again immediately after the selected group.
+            if (delta > 0)
+            {
+                for (var position = groupEnd + 1; position < editableIndices.Length; position++)
+                {
+                    var index = editableIndices[position];
+                    var point = candidate[index];
+                    var requiredFrequency = candidate[editableIndices[position - 1]].FrequencyMhz;
+                    if (point.FrequencyMhz >= requiredFrequency)
+                        break;
+
+                    if (!point.IsEditable)
+                        return false;
+
+                    var offset = requiredFrequency - point.StockFrequencyMhz;
+                    if (offset < point.MinimumOffsetMhz || offset > point.MaximumOffsetMhz)
+                        return false;
+
+                    candidate[index] = point with
+                    {
+                        FrequencyMhz = requiredFrequency,
+                        OffsetMhz = offset
+                    };
+                }
+            }
+            else
+            {
+                for (var position = groupStart - 1; position >= 0; position--)
+                {
+                    var index = editableIndices[position];
+                    var point = candidate[index];
+                    var requiredFrequency = candidate[editableIndices[position + 1]].FrequencyMhz;
+                    if (point.FrequencyMhz <= requiredFrequency)
+                        break;
+
+                    if (!point.IsEditable)
+                        return false;
+
+                    var offset = requiredFrequency - point.StockFrequencyMhz;
+                    if (offset < point.MinimumOffsetMhz || offset > point.MaximumOffsetMhz)
+                        return false;
+
+                    candidate[index] = point with
+                    {
+                        FrequencyMhz = requiredFrequency,
+                        OffsetMhz = offset
+                    };
+                }
+            }
+
+            // Validate the complete native table, including fixed driver points.
             for (var i = 1; i < candidate.Length; i++)
             {
                 if (candidate[i].FrequencyMhz < candidate[i - 1].FrequencyMhz)
@@ -730,17 +766,13 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return true;
         }
 
-        // Find the largest valid movement in the requested direction. If the
-        // incoming table is already invalid, leave it untouched rather than
-        // accidentally treating a failed zero-offset candidate as a valid edit.
         if (!TryBuildCurve(0, out _))
             return handle.FrequencyMhz;
 
-        // A real driver limit or immutable point can still limit movement, but
-        // editable hidden neighbors participate in the tapered transition.
-        var requestedMagnitude = Math.Abs(requestedDelta);
+        // Search for the largest valid movement in the requested direction.
+        // Driver point bounds and immutable points remain hard limits.
         var low = 0;
-        var high = requestedMagnitude;
+        var high = Math.Abs(requestedDelta);
         GPUVoltageCurvePoint[] bestCurve = _voltageCurvePoints.ToArray();
         while (low <= high)
         {
