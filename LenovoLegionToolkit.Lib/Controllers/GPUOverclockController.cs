@@ -114,7 +114,7 @@ public class GPUOverclockController
 
             var temperature = gpu.ThermalInformation.ThermalSensors.FirstOrDefault()?.CurrentTemperature ?? -1;
 
-            var coreVoltage = GPUVoltageReader.TryReadCoreVoltageVolts();
+            var coreVoltage = GPUVoltageReader.TryReadCoreVoltageMicrovolts();
 
             return new GPUOverclockTelemetry(utilization, coreClock, memoryClock, temperature, coreVoltage);
         }
