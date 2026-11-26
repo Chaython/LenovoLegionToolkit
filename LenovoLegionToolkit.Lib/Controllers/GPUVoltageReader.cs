@@ -5,7 +5,7 @@ namespace LenovoLegionToolkit.Lib.Controllers;
 
 /// <summary>
 /// Reads NVIDIA's private ClientVoltRailsGetStatus telemetry endpoint.
-/// This is a read-only NVAPI call; unsupported drivers/GPUs return null.
+/// Returns the raw core voltage in microvolts; unsupported drivers/GPUs return null.
 /// </summary>
 internal static class GPUVoltageReader
 {
@@ -46,7 +46,7 @@ internal static class GPUVoltageReader
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern IntPtr QueryInterface32(uint interfaceId);
 
-    public static double? TryReadCoreVoltageVolts()
+    public static ulong? TryReadCoreVoltageMicrovolts()
     {
         try
         {
@@ -66,25 +66,19 @@ internal static class GPUVoltageReader
             if (enumerate(handles, out var count) != 0 || count <= 0 || count > handles.Length)
                 return null;
 
-            // NVAPI's GPU enumeration order is stable for the active physical adapters.
-            // Legion Toolkit currently obtains its primary discrete GPU from NVAPI.GetGPU(),
-            // which resolves to the first physical NVIDIA adapter in the common single-dGPU case.
+            // NVAPI's first physical GPU is the active adapter in the common single-dGPU
+            // Legion configuration. The sensor is optional; do not substitute an estimate.
             var status = new VoltRailsStatus { Version = VoltRailsStatusVersion1 };
             if (readVoltage(handles[0], ref status) != 0)
                 return null;
 
             var microvolts = ((ulong)status.CoreMicrovoltsHigh << 32) | status.CoreMicrovolts;
-            if (microvolts == 0)
-                return null;
-
-            var volts = microvolts / 1_000_000d;
-
-            // Reject implausible values rather than presenting corrupt/unsupported data.
-            return volts is >= 0.1 and <= 2.5 ? volts : null;
+            // Reject zero and implausible values without converting the reported unit.
+            return microvolts is >= 100_000 and <= 2_500_000 ? microvolts : null;
         }
         catch (Exception)
         {
-            // NVAPI's private endpoint is optional and may be absent on some driver/GPU
+            // This private endpoint may be absent or unsupported on some GPU/driver
             // combinations. Telemetry must never break the rest of the overclock UI.
             return null;
         }
