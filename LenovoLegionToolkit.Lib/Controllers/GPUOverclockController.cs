@@ -130,7 +130,7 @@ public class GPUOverclockController
     /// </summary>
     public async Task<bool> ApplyStateWithRollbackAsync(
         GPUOverclockInfo info,
-        System.Collections.Generic.IReadOnlyList<GPUVoltageCurvePoint> editedPoints,
+        global::System.Collections.Generic.IReadOnlyList<GPUVoltageCurvePoint> editedPoints,
         bool resetCurve)
     {
         var previousEnabled = _settings.Store.Enabled;
@@ -331,7 +331,7 @@ public class GPUOverclockController
 
             var minimumOffsetMhz = (int)Math.Ceiling(graphicsRange.Value.MinimumInkHz / 1000d);
             var maximumOffsetMhz = (int)Math.Floor(graphicsRange.Value.MaximumInkHz / 1000d);
-            var result = new System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
+            var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
 
             for (var i = first; i <= last; i++)
             {
@@ -366,7 +366,7 @@ public class GPUOverclockController
     /// Validates and persists a complete edited curve. Only driver-editable points
     /// are stored; fixed points remain controlled by the GPU firmware/driver.
     /// </summary>
-    public bool SaveVoltageCurve(System.Collections.Generic.IReadOnlyList<GPUVoltageCurvePoint> editedPoints)
+    public bool SaveVoltageCurve(global::System.Collections.Generic.IReadOnlyList<GPUVoltageCurvePoint> editedPoints)
     {
         if (editedPoints is null || editedPoints.Count == 0)
             return false;
@@ -383,7 +383,7 @@ public class GPUOverclockController
             return false;
         }
 
-        var offsets = new System.Collections.Generic.List<GPUVoltageCurveOffset>();
+        var offsets = new global::System.Collections.Generic.List<GPUVoltageCurveOffset>();
         var previousFrequency = int.MinValue;
 
         for (var i = 0; i < livePoints.Length; i++)
@@ -605,7 +605,7 @@ public class GPUOverclockController
 
     private static bool ApplyClockCurve(PhysicalGPU gpu, GPUOverclockInfo info, PrivateClockBoostRangesV1.ClockBoostRange graphicsRange,
         PrivateClockBoostRangesV1.ClockBoostRange? memoryRange, int coreDeltaKhz, int memoryDeltaKhz, int maxCoreDeltaKhz,
-        System.Collections.Generic.IReadOnlyList<GPUVoltageCurveOffset>? savedCurve)
+        global::System.Collections.Generic.IReadOnlyList<GPUVoltageCurveOffset>? savedCurve)
     {
         var voltageMv = info.VoltageLockMv > 0 ? info.VoltageLockMv : info.VoltageCapMv;
         var offsetsRequested = coreDeltaKhz != 0 || memoryDeltaKhz != 0;
