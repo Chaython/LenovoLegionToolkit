@@ -786,8 +786,12 @@ public partial class OverclockDiscreteGPUSettingsWindow
         }
 
         var point = _voltageCurvePoints[_selectedCurvePoint];
-        _curvePointDetails.Text = $"{point.VoltageMv} mV  •  {point.FrequencyMhz} MHz  •  {point.OffsetMhz:+#;-#;0} MHz offset" +
-            (point.IsEditable ? string.Empty : "  •  Driver-controlled");
+        var group = GetSelectedEditablePointGroup();
+        var groupRange = group.Count == 0
+            ? string.Empty
+            : $"  •  Group: {group.Count} native points ({_voltageCurvePoints[group[0]].VoltageMv}–{_voltageCurvePoints[group[^1]].VoltageMv} mV)";
+        _curvePointDetails.Text = $"{point.VoltageMv} mV handle  •  {point.FrequencyMhz} MHz  •  {point.OffsetMhz:+#;-#;0} MHz offset" +
+            groupRange + (point.IsEditable ? string.Empty : "  •  Driver-controlled");
     }
 
     private void ResetVoltageCurveButton_Click(object sender, RoutedEventArgs e)
