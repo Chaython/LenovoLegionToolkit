@@ -590,6 +590,18 @@ public class GPUOverclockController
                     deltas[index] = new PrivateClockBoostTableV1.GPUDelta(offsetKhz);
                 }
 
+                // A custom point must never undo an explicitly requested voltage cap.
+                if (anchorIndex >= 0)
+                {
+                    for (var i = anchorIndex + 1; i <= lastIndex; i++)
+                    {
+                        var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, i);
+                        var targetFrequencyKhz = stockFrequencyKhz + deltas[i].FrequencyDeltaInkHz;
+                        if (targetFrequencyKhz > anchorTargetKhz)
+                            deltas[i] = new PrivateClockBoostTableV1.GPUDelta(Math.Max(anchorTargetKhz - stockFrequencyKhz, minDeltaKhz));
+                    }
+                }
+
                 var previousFrequencyKhz = int.MinValue;
                 for (var i = firstIndex; i <= lastIndex; i++)
                 {
