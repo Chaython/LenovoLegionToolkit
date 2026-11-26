@@ -342,8 +342,10 @@ public partial class OverclockDiscreteGPUSettingsWindow
         var height = Math.Max(150, _voltageCurveCanvas.ActualHeight > 0 ? _voltageCurveCanvas.ActualHeight : _voltageCurveCanvas.Height);
         var minVoltage = _voltageCurvePoints.Count == 0 ? 0 : _voltageCurvePoints.Min(p => p.VoltageMv);
         var maxVoltage = _voltageCurvePoints.Count == 0 ? 1 : _voltageCurvePoints.Max(p => p.VoltageMv);
-        var minFrequency = _voltageCurvePoints.Count == 0 ? 0 : _voltageCurvePoints.Min(p => p.FrequencyMhz);
-        var maxFrequency = _voltageCurvePoints.Count == 0 ? 1 : _voltageCurvePoints.Max(p => p.FrequencyMhz);
+        var minFrequency = _voltageCurvePoints.Count == 0 ? 0 : _voltageCurvePoints.Min(p =>
+            p.IsEditable ? Math.Min(p.FrequencyMhz, p.StockFrequencyMhz + p.MinimumOffsetMhz) : p.FrequencyMhz);
+        var maxFrequency = _voltageCurvePoints.Count == 0 ? 1 : _voltageCurvePoints.Max(p =>
+            p.IsEditable ? Math.Max(p.FrequencyMhz, p.StockFrequencyMhz + p.MaximumOffsetMhz) : p.FrequencyMhz);
         if (maxVoltage <= minVoltage) maxVoltage = minVoltage + 1;
         if (maxFrequency <= minFrequency) { minFrequency -= 25; maxFrequency += 25; }
         var frequencyPadding = Math.Max(10, (maxFrequency - minFrequency) * 0.08);
