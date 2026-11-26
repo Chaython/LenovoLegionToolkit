@@ -9,12 +9,12 @@
     xmlns:utils="clr-namespace:LenovoLegionToolkit.WPF.Utils"
     xmlns:wpfui="http://schemas.lepo.co/wpfui/2022/xaml"
     Title="{x:Static resources:Resource.OverclockDiscreteGPUSettingsWindow_Title}"
-    Width="650"
+    Width="900"
     MinWidth="650"
-    MaxWidth="800"
+    MaxWidth="1600"
     SizeToContent="Height"
     FlowDirection="{x:Static utils:LocalizationHelper.Direction}"
-    ResizeMode="NoResize"
+    ResizeMode="CanResize"
     ShowInTaskbar="False"
     WindowStartupLocation="CenterOwner">
 
@@ -100,8 +100,7 @@
                                     Text="{x:Static resources:Resource.MHz}"
                                     IsHitTestVisible="False" />
                             </StackPanel>
-                        </StackPanel>
-                    </custom:CardControl>
+                    </StackPanel>
 
                     <custom:CardControl Margin="0,0,0,24" Icon="Memory16">
                         <custom:CardControl.Header>
@@ -226,15 +225,18 @@
                         </StackPanel>
                     </custom:CardControl>
 
-                    <!-- Editable NVIDIA voltage/frequency curve -->
+                    <!-- Editable NVIDIA voltage/frequency curve. Keep this section flat
+                         rather than wrapping it in CardControl, which adds a large filled panel. -->
                     <TextBlock Text="Voltage / Frequency Curve" FontWeight="SemiBold" FontSize="14" Margin="0,16,0,8" />
-                    <custom:CardControl Margin="0,0,0,8" Icon="ArrowDown24">
-                        <custom:CardControl.Header>
-                            <controls:CardHeaderControl
-                                Title="GPU Voltage / Frequency Curve"
-                                Subtitle="Drag an editable point vertically to change its target frequency. Voltage is fixed by the GPU." />
-                        </custom:CardControl.Header>
-                        <StackPanel>
+                    <StackPanel HorizontalAlignment="Stretch" Margin="0,0,0,8">
+                        <TextBlock
+                            FontWeight="SemiBold"
+                            Margin="0,0,0,4"
+                            Text="GPU Voltage / Frequency Curve" />
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                            Text="Drag an editable point vertically to change its target frequency. Voltage is fixed by the GPU." />
                             <TextBlock
                                 x:Name="_curveStatus"
                                 Margin="0,0,0,8"
@@ -249,22 +251,17 @@
                                 Margin="0,0,0,6"
                                 Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                 Text="Preview: dashed line is the stock curve; solid line is your proposed curve. Changes are not applied until you confirm." />
-                            <Border
-                                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
-                                BorderThickness="1"
-                                CornerRadius="4"
-                                Padding="4">
-                                <Canvas
-                                    x:Name="_voltageCurveCanvas"
-                                    Width="570"
-                                    Height="230"
-                                    Background="Transparent"
-                                    ClipToBounds="True"
-                                    MouseLeftButtonDown="VoltageCurveCanvas_OnMouseLeftButtonDown"
-                                    MouseMove="VoltageCurveCanvas_OnMouseMove"
-                                    MouseLeftButtonUp="VoltageCurveCanvas_OnMouseLeftButtonUp"
-                                    SizeChanged="VoltageCurveCanvas_OnSizeChanged" />
-                            </Border>
+                            <Canvas
+                                x:Name="_voltageCurveCanvas"
+                                MinHeight="230"
+                                Height="260"
+                                HorizontalAlignment="Stretch"
+                                Background="Transparent"
+                                ClipToBounds="True"
+                                MouseLeftButtonDown="VoltageCurveCanvas_OnMouseLeftButtonDown"
+                                MouseMove="VoltageCurveCanvas_OnMouseMove"
+                                MouseLeftButtonUp="VoltageCurveCanvas_OnMouseLeftButtonUp"
+                                SizeChanged="VoltageCurveCanvas_OnSizeChanged" />
                             <TextBlock
                                 x:Name="_curvePointDetails"
                                 Margin="0,8,0,0"
