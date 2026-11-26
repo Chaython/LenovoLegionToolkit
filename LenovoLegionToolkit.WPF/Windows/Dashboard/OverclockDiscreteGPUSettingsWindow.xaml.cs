@@ -105,8 +105,34 @@ public partial class OverclockDiscreteGPUSettingsWindow
         _contentGrid.IsEnabled = true;
     }
 
-    private void CoreSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) =>
+    private void CoreSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
         UpdateValueTextBoxes();
+
+        // Reset preview represents the global core offset, not a saved custom
+        // curve. Keep it synchronized when the user changes that offset after
+        // pressing Reset; otherwise the preview and the settings being saved
+        // silently diverge.
+        if (_curveReset && _voltageCurvePoints.Count > 0)
+            RefreshResetCurvePreview();
+    }
+
+    private void RefreshResetCurvePreview()
+    {
+        var resetCurve = _gpuOverclockController.GetVoltageCurveWithCoreOffset((int)_coreSlider.Value);
+        if (resetCurve.Length != _voltageCurvePoints.Count)
+        {
+            _curveStatus.Text = "Could not rebuild the reset preview for this core offset within the driver-supported range. The previous preview was kept.";
+            return;
+        }
+
+        _voltageCurvePoints.Clear();
+        _voltageCurvePoints.AddRange(resetCurve);
+        _uncappedVoltageCurvePoints.Clear();
+        _uncappedVoltageCurvePoints.AddRange(resetCurve);
+        RefreshVoltageCurvePreview();
+        DrawVoltageCurve();
+    }
 
     private void MemorySlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e) =>
         UpdateValueTextBoxes();
@@ -949,15 +975,15 @@ public partial class OverclockDiscreteGPUSettingsWindow
     {
         // Reset is a preview-only operation. The saved curve is not changed until Save
         // or the user explicitly confirms Apply.
-        var coreOffset = (int)_coreSlider.Value;
-        var resetCurve = _gpuOverclockController.GetVoltageCurveWithCoreOffset(coreOffset);
+        _curveReset = true;
+        var resetCurve = _gpuOverclockController.GetVoltageCurveWithCoreOffset((int)_coreSlider.Value);
         if (resetCurve.Length != _voltageCurvePoints.Count)
         {
+            _curveReset = false;
             _curveStatus.Text = "Could not build a reset curve within the current driver-supported range. The existing preview was kept.";
             return;
         }
 
-        _curveReset = true;
         _voltageCurvePoints.Clear();
         _voltageCurvePoints.AddRange(resetCurve);
         _uncappedVoltageCurvePoints.Clear();
