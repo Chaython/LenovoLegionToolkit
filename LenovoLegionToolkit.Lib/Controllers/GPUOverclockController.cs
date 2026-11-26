@@ -372,7 +372,7 @@ public class GPUOverclockController
     public GPUVoltageCurvePoint[] GetVoltageCurveWithCoreOffset(int coreOffsetMhz)
     {
         var curve = GetVoltageCurve();
-        if (curve.Length == 0 || coreOffsetMhz == 0)
+        if (curve.Length == 0)
             return curve;
 
         try
