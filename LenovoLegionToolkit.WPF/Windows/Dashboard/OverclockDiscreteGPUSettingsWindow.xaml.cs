@@ -546,12 +546,14 @@ public partial class OverclockDiscreteGPUSettingsWindow
             maximumDelta = Math.Min(maximumDelta, point.StockFrequencyMhz + point.MaximumOffsetMhz - point.FrequencyMhz);
         }
 
-        var first = group[0];
-        var last = group[^1];
-        if (first > 0)
-            minimumDelta = Math.Max(minimumDelta, _voltageCurvePoints[first - 1].FrequencyMhz - _voltageCurvePoints[first].FrequencyMhz);
-        if (last < _voltageCurvePoints.Count - 1)
-            maximumDelta = Math.Min(maximumDelta, _voltageCurvePoints[last + 1].FrequencyMhz - _voltageCurvePoints[last].FrequencyMhz);
+        var groupSet = group.ToHashSet();
+        foreach (var index in group)
+        {
+            if (index > 0 && !groupSet.Contains(index - 1))
+                minimumDelta = Math.Max(minimumDelta, _voltageCurvePoints[index - 1].FrequencyMhz - _voltageCurvePoints[index].FrequencyMhz);
+            if (index < _voltageCurvePoints.Count - 1 && !groupSet.Contains(index + 1))
+                maximumDelta = Math.Min(maximumDelta, _voltageCurvePoints[index + 1].FrequencyMhz - _voltageCurvePoints[index].FrequencyMhz);
+        }
 
         if (minimumDelta > maximumDelta)
             return handle.FrequencyMhz;
