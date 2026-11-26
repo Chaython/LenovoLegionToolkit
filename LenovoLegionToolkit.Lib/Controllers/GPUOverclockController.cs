@@ -217,6 +217,127 @@ public class GPUOverclockController
             await ApplyStateAsync().ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Reads the active NVIDIA voltage/frequency curve. Point indices and voltages
+    /// are returned exactly as reported by the driver so saved edits can be matched
+    /// safely on the next apply.
+    /// </summary>
+    public GPUVoltageCurvePoint[] GetVoltageCurve()
+    {
+        try
+        {
+            NVAPI.Initialize();
+            var gpu = NVAPI.GetGPU();
+            if (gpu is null)
+                return [];
+
+            var (graphicsRange, _) = GetCurveRanges(gpu);
+            if (graphicsRange is null)
+                return [];
+
+            var (points, structVersion) = ReadCurvePoints(gpu);
+            var deltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
+            var first = graphicsRange.Value.FirstPointIndex;
+            var last = Math.Min(graphicsRange.Value.LastPointIndex, Math.Min(points.Length, deltas.Length) - 1);
+            if (first < 0 || last < first)
+                return [];
+
+            var minimumOffsetMhz = (int)Math.Ceiling(graphicsRange.Value.MinimumInkHz / 1000d);
+            var maximumOffsetMhz = (int)Math.Floor(graphicsRange.Value.MaximumInkHz / 1000d);
+            var result = new System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
+
+            for (var i = first; i <= last; i++)
+            {
+                var point = points[i];
+                if (point.VoltageInMicroV == 0)
+                    continue;
+
+                var currentOffsetMhz = deltas[i].FrequencyDeltaInkHz / 1000;
+                var stockFrequencyMhz = ((int)point.FrequencyInkHz - deltas[i].FrequencyDeltaInkHz) / 1000;
+                var frequencyMhz = (int)point.FrequencyInkHz / 1000;
+                result.Add(new GPUVoltageCurvePoint(
+                    i,
+                    (int)point.VoltageInMilliV,
+                    frequencyMhz,
+                    stockFrequencyMhz,
+                    currentOffsetMhz,
+                    deltas[i].PointMode == 0,
+                    minimumOffsetMhz,
+                    maximumOffsetMhz));
+            }
+
+            return result.ToArray();
+        }
+        catch (Exception ex)
+        {
+            Log.Instance.Trace("Failed to read the GPU voltage/frequency curve.", ex);
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Validates and persists a complete edited curve. Only driver-editable points
+    /// are stored; fixed points remain controlled by the GPU firmware/driver.
+    /// </summary>
+    public bool SaveVoltageCurve(System.Collections.Generic.IReadOnlyList<GPUVoltageCurvePoint> editedPoints)
+    {
+        if (editedPoints is null || editedPoints.Count == 0)
+            return false;
+
+        var livePoints = GetVoltageCurve();
+        if (livePoints.Length == 0 || livePoints.Length != editedPoints.Count)
+            return false;
+
+        var offsets = new System.Collections.Generic.List<GPUVoltageCurveOffset>();
+        var previousFrequency = int.MinValue;
+
+        for (var i = 0; i < livePoints.Length; i++)
+        {
+            var live = livePoints[i];
+            var edited = editedPoints[i];
+
+            if (edited.Index != live.Index || edited.VoltageMv != live.VoltageMv)
+                return false;
+
+            var frequency = edited.FrequencyMhz;
+            if (frequency < previousFrequency)
+            {
+                Log.Instance.Trace($"Rejected non-monotonic V/F curve at {live.VoltageMv} mV.");
+                return false;
+            }
+            previousFrequency = frequency;
+
+            if (!live.IsEditable)
+                continue;
+
+            var offset = frequency - live.StockFrequencyMhz;
+            if (offset < live.MinimumOffsetMhz || offset > live.MaximumOffsetMhz)
+            {
+                Log.Instance.Trace($"Rejected V/F point outside the driver offset range. [index={live.Index}, offset={offset}, min={live.MinimumOffsetMhz}, max={live.MaximumOffsetMhz}]");
+                return false;
+            }
+
+            offsets.Add(new GPUVoltageCurveOffset
+            {
+                Index = live.Index,
+                VoltageMv = live.VoltageMv,
+                OffsetMhz = offset
+            });
+        }
+
+        _settings.Store.VoltageCurve = offsets;
+        _settings.SynchronizeStore();
+        Log.Instance.Trace($"Saved custom GPU V/F curve. [editablePoints={offsets.Count}]");
+        return true;
+    }
+
+    public void ClearVoltageCurve()
+    {
+        _settings.Store.VoltageCurve = [];
+        _settings.SynchronizeStore();
+        Log.Instance.Trace("Cleared custom GPU V/F curve.");
+    }
+
     private const int FallbackMinCoreDeltaMhz = -500;
     private const int FallbackMaxCoreDeltaMhz = 500;
     private const int FallbackMinMemoryDeltaMhz = -3000;
@@ -333,7 +454,7 @@ public class GPUOverclockController
             return legacyApplied && !voltageRequested;
         }
 
-        return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, maxCoreDeltaMhz * 1000);
+        return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, maxCoreDeltaMhz * 1000, _settings.Store.VoltageCurve);
     }
 
     private static bool ApplyPerformanceStates(PhysicalGPU gpu, int coreDeltaKhz, int memoryDeltaKhz)
@@ -370,7 +491,8 @@ public class GPUOverclockController
     }
 
     private static bool ApplyClockCurve(PhysicalGPU gpu, GPUOverclockInfo info, PrivateClockBoostRangesV1.ClockBoostRange graphicsRange,
-        PrivateClockBoostRangesV1.ClockBoostRange? memoryRange, int coreDeltaKhz, int memoryDeltaKhz, int maxCoreDeltaKhz)
+        PrivateClockBoostRangesV1.ClockBoostRange? memoryRange, int coreDeltaKhz, int memoryDeltaKhz, int maxCoreDeltaKhz,
+        System.Collections.Generic.IReadOnlyList<GPUVoltageCurveOffset>? savedCurve)
     {
         var voltageMv = info.VoltageLockMv > 0 ? info.VoltageLockMv : info.VoltageCapMv;
         var offsetsRequested = coreDeltaKhz != 0 || memoryDeltaKhz != 0;
@@ -442,6 +564,44 @@ public class GPUOverclockController
                 }
 
                 deltas[i] = new PrivateClockBoostTableV1.GPUDelta(deltaKhz);
+            }
+
+            if (savedCurve is { Count: > 0 })
+            {
+                foreach (var savedPoint in savedCurve)
+                {
+                    var index = savedPoint.Index;
+                    if (index < firstIndex || index > lastIndex || index >= available ||
+                        points[index].VoltageInMicroV == 0 ||
+                        (int)points[index].VoltageInMilliV != savedPoint.VoltageMv ||
+                        currentDeltas[index].PointMode != 0)
+                    {
+                        Log.Instance.Trace($"Saved V/F point no longer matches the active driver curve. [index={index}, voltage={savedPoint.VoltageMv}]");
+                        return false;
+                    }
+
+                    var offsetKhz = savedPoint.OffsetMhz * 1000;
+                    if (offsetKhz < graphicsRange.MinimumInkHz || offsetKhz > graphicsRange.MaximumInkHz)
+                    {
+                        Log.Instance.Trace($"Saved V/F offset is outside the current driver range. [index={index}, offset={savedPoint.OffsetMhz}]");
+                        return false;
+                    }
+
+                    deltas[index] = new PrivateClockBoostTableV1.GPUDelta(offsetKhz);
+                }
+
+                var previousFrequencyKhz = int.MinValue;
+                for (var i = firstIndex; i <= lastIndex; i++)
+                {
+                    var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, i);
+                    var targetFrequencyKhz = stockFrequencyKhz + deltas[i].FrequencyDeltaInkHz;
+                    if (targetFrequencyKhz < previousFrequencyKhz)
+                    {
+                        Log.Instance.Trace($"Saved V/F curve would produce a descending frequency segment. [index={i}]");
+                        return false;
+                    }
+                    previousFrequencyKhz = targetFrequencyKhz;
+                }
             }
 
             GPUApi.SetClockBoostTable(gpu.Handle, new PrivateClockBoostTableV1(deltas), structVersion);
