@@ -22,6 +22,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
     private readonly GPUOverclockController _gpuOverclockController = IoCContainer.Resolve<GPUOverclockController>();
     private readonly List<GPUVoltageCurvePoint> _voltageCurvePoints = [];
+    private readonly List<GPUVoltageCurvePoint> _uncappedVoltageCurvePoints = [];
     private int _selectedCurvePoint = -1;
     private bool _isDraggingCurvePoint;
     private bool _curveReset;
@@ -81,6 +82,8 @@ public partial class OverclockDiscreteGPUSettingsWindow
         var curve = await Task.Run(_gpuOverclockController.GetVoltageCurve);
         _voltageCurvePoints.Clear();
         _voltageCurvePoints.AddRange(curve);
+        _uncappedVoltageCurvePoints.Clear();
+        _uncappedVoltageCurvePoints.AddRange(curve);
         // Only show the editor when the active NVIDIA driver exposes a usable
         // editable V/F table. AMD GPUs (and unsupported NVIDIA GPUs) return no
         // curve from the NVAPI-backed controller, so the selector is hidden.
@@ -95,6 +98,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
         _curvePointCountSlider.IsEnabled = editablePointCount > 1;
         UpdateCurvePointCountText();
         _voltageCurveCanvas.IsEnabled = editablePointCount > 0;
+        RefreshVoltageCurvePreview();
         DrawVoltageCurve();
 
         _contentGrid.IsEnabled = true;
@@ -184,6 +188,53 @@ public partial class OverclockDiscreteGPUSettingsWindow
         UpdateValueTextBoxes();
     }
 
+    private int GetActiveVoltageLimitMv()
+    {
+        if (_voltageLockSlider != null && _voltageLockSlider.Value > _voltageLockSlider.Minimum)
+            return (int)_voltageLockSlider.Value;
+        if (_voltageCapSlider != null && _voltageCapSlider.Value > _voltageCapSlider.Minimum)
+            return (int)_voltageCapSlider.Value;
+        return 0;
+    }
+
+    // The unconstrained proposal is retained separately so changing or disabling
+    // the cap does not permanently bake a previous cap into the user's curve.
+    private void RefreshVoltageCurvePreview()
+    {
+        if (_voltageCurvePoints.Count == 0 || _uncappedVoltageCurvePoints.Count != _voltageCurvePoints.Count)
+            return;
+
+        var voltageLimit = GetActiveVoltageLimitMv();
+        if (voltageLimit <= 0)
+        {
+            _voltageCurvePoints.Clear();
+            _voltageCurvePoints.AddRange(_uncappedVoltageCurvePoints);
+            return;
+        }
+
+        if (!_gpuOverclockController.TryApplyVoltageLimitToCurve(
+            _uncappedVoltageCurvePoints, voltageLimit, out var effectiveCurve, out var error))
+        {
+            _curveStatus.Text = error + " The cap cannot be represented without changing driver-controlled points or exceeding a driver limit.";
+            _voltageCurvePoints.Clear();
+            _voltageCurvePoints.AddRange(_uncappedVoltageCurvePoints);
+            return;
+        }
+
+        _voltageCurvePoints.Clear();
+        _voltageCurvePoints.AddRange(effectiveCurve);
+        _curveStatus.Text = $"Preview includes a {voltageLimit} mV voltage limit. The curve shown is the curve that will be saved and sent to the driver.";
+    }
+
+    private void CaptureUncappedCurveEdits()
+    {
+        if (GetActiveVoltageLimitMv() > 0 || _voltageCurvePoints.Count == 0)
+            return;
+
+        _uncappedVoltageCurvePoints.Clear();
+        _uncappedVoltageCurvePoints.AddRange(_voltageCurvePoints);
+    }
+
     private void VoltageCapSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_voltageCapValue == null || _voltageCapSlider == null) return;
@@ -192,10 +243,10 @@ public partial class OverclockDiscreteGPUSettingsWindow
         if (_voltageCapSlider.Value > _voltageCapSlider.Minimum)
         {
             if (_voltageLockSlider != null && _voltageLockSlider.Value > _voltageLockSlider.Minimum)
-            {
                 _voltageLockSlider.Value = _voltageLockSlider.Minimum;
-            }
         }
+        RefreshVoltageCurvePreview();
+        DrawVoltageCurve();
     }
 
     private void VoltageLockSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -206,10 +257,10 @@ public partial class OverclockDiscreteGPUSettingsWindow
         if (_voltageLockSlider.Value > _voltageLockSlider.Minimum)
         {
             if (_voltageCapSlider != null && _voltageCapSlider.Value > _voltageCapSlider.Minimum)
-            {
                 _voltageCapSlider.Value = _voltageCapSlider.Minimum;
-            }
         }
+        RefreshVoltageCurvePreview();
+        DrawVoltageCurve();
     }
 
     private async void ApplyButton_Click(object sender, RoutedEventArgs e)
@@ -460,6 +511,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
         }
 
         _curveReset = false;
+        CaptureUncappedCurveEdits();
         _curveStatus.Text = $"Flattened {_voltageCurvePoints.Count - _selectedCurvePoint} curve points from " +
             $"{_voltageCurvePoints[_selectedCurvePoint].VoltageMv} mV at {targetFrequency} MHz. Preview only; Apply to send it to the driver.";
         UpdateCurvePointDetails();
@@ -520,6 +572,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
         var targetFrequency = (int)Math.Round(MapYToFrequency(clampedY, bounds));
         ApplySelectedGroupFrequency(targetFrequency);
         _curveReset = false;
+        CaptureUncappedCurveEdits();
         UpdateCurvePointDetails();
         DrawVoltageCurve();
     }
@@ -686,6 +739,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
         var requested = frequency;
         frequency = ApplySelectedGroupFrequency(frequency);
         _curveReset = false;
+        CaptureUncappedCurveEdits();
         _curveStatus.Text = requested == frequency
             ? $"Shifted the selected group to {frequency} MHz at its handle. Preview only; Apply to send all grouped driver points."
             : $"Adjusted the requested {requested} MHz to {frequency} MHz to preserve driver limits and a monotonic transition across neighboring points.";
@@ -872,6 +926,9 @@ public partial class OverclockDiscreteGPUSettingsWindow
             };
         }
 
+        _uncappedVoltageCurvePoints.Clear();
+        _uncappedVoltageCurvePoints.AddRange(_voltageCurvePoints);
+        RefreshVoltageCurvePreview();
         _selectedCurvePoint = -1;
         _dragCurveBounds = null;
         _curveStatus.Text = "Reset preview: custom point offsets will be cleared on Save or confirmed Apply. Nothing has been changed on the GPU.";
