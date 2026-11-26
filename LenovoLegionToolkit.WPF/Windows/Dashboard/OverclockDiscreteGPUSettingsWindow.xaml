@@ -9,10 +9,11 @@
     xmlns:utils="clr-namespace:LenovoLegionToolkit.WPF.Utils"
     xmlns:wpfui="http://schemas.lepo.co/wpfui/2022/xaml"
     Title="{x:Static resources:Resource.OverclockDiscreteGPUSettingsWindow_Title}"
-    Width="900"
-    MinWidth="650"
-    MaxWidth="1600"
-    SizeToContent="Height"
+    Width="1000"
+    Height="760"
+    MinWidth="760"
+    MinHeight="600"
+    MaxWidth="1800"
     FlowDirection="{x:Static utils:LocalizationHelper.Direction}"
     ResizeMode="CanResize"
     ShowInTaskbar="False"
@@ -58,8 +59,8 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                <StackPanel Margin="0,0,4,0">
+            <ScrollViewer x:Name="_settingsScrollViewer" Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Width="{Binding ViewportWidth, ElementName=_settingsScrollViewer}" Margin="0,0,4,0">
                     <!-- Overclocking Section -->
                     <TextBlock Text="{x:Static resources:Resource.OverclockDiscreteGPUSettingsWindow_Overclocking}" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,8" />
                     
@@ -255,8 +256,8 @@
                                 Text="Preview: dashed line is the stock curve; solid line is your proposed curve. Changes are not applied until you confirm." />
                             <Canvas
                                 x:Name="_voltageCurveCanvas"
-                                MinHeight="230"
-                                Height="260"
+                                MinHeight="170"
+                                Height="190"
                                 HorizontalAlignment="Stretch"
                                 Background="Transparent"
                                 ClipToBounds="True"
