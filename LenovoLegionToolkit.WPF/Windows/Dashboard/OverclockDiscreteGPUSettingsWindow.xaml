@@ -240,6 +240,15 @@
                                 Margin="0,0,0,8"
                                 Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                 Text="Reading curve from NVIDIA driver..." />
+                            <TextBlock
+                                x:Name="_curveTelemetry"
+                                Margin="0,0,0,8"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="Live GPU telemetry: waiting for NVIDIA GPU..." />
+                            <TextBlock
+                                Margin="0,0,0,6"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="Preview: dashed line is the stock curve; solid line is your proposed curve. Changes are not applied until you confirm." />
                             <Border
                                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                                 BorderThickness="1"
