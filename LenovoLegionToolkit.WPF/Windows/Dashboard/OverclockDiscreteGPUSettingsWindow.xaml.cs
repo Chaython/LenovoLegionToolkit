@@ -79,8 +79,12 @@ public partial class OverclockDiscreteGPUSettingsWindow
         var curve = await Task.Run(_gpuOverclockController.GetVoltageCurve);
         _voltageCurvePoints.Clear();
         _voltageCurvePoints.AddRange(curve);
+        // Only show the editor when the active NVIDIA driver exposes a usable
+        // editable V/F table. AMD GPUs (and unsupported NVIDIA GPUs) return no
+        // curve from the NVAPI-backed controller, so the selector is hidden.
+        _voltageCurveSection.Visibility = curve.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         _curveStatus.Text = curve.Length == 0
-            ? "The NVIDIA driver did not expose an editable voltage/frequency curve on this GPU."
+            ? "No editable NVIDIA voltage/frequency curve is available on this GPU."
             : $"{curve.Length} driver points loaded. Solid points are editable; hollow points are driver-controlled.";
         _voltageCurveCanvas.IsEnabled = curve.Any(p => p.IsEditable);
         DrawVoltageCurve();
