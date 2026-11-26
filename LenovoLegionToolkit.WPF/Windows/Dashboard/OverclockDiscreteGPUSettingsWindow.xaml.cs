@@ -599,10 +599,14 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return true;
         }
 
-        // Find the largest valid movement in the requested direction. The curve
-        // starts valid, so zero is always the safe lower bound. This only limits
-        // movement when a real driver limit or immutable point makes a valid
-        // monotonic transition impossible; editable hidden neighbors move with it.
+        // Find the largest valid movement in the requested direction. If the
+        // incoming table is already invalid, leave it untouched rather than
+        // accidentally treating a failed zero-offset candidate as a valid edit.
+        if (!TryBuildCurve(0, out _))
+            return handle.FrequencyMhz;
+
+        // A real driver limit or immutable point can still limit movement, but
+        // editable hidden neighbors participate in the tapered transition.
         var requestedMagnitude = Math.Abs(requestedDelta);
         var low = 0;
         var high = requestedMagnitude;
