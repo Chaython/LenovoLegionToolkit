@@ -1,4 +1,5 @@
-﻿using static LenovoLegionToolkit.Lib.Settings.GPUOverclockSettings;
+﻿using System.Collections.Generic;
+using static LenovoLegionToolkit.Lib.Settings.GPUOverclockSettings;
 
 namespace LenovoLegionToolkit.Lib.Settings;
 
@@ -8,5 +9,6 @@ public class GPUOverclockSettings() : AbstractSettings<GPUOverclockSettingsStore
     {
         public bool Enabled { get; set; }
         public GPUOverclockInfo Info { get; set; } = GPUOverclockInfo.Zero;
+        public List<GPUVoltageCurveOffset> VoltageCurve { get; set; } = [];
     }
 }
