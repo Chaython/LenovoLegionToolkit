@@ -339,9 +339,6 @@ public class GPUOverclockController
 
             LogCurveRangeDiagnostics(gpu, graphicsRange.Value, points, deltas, structVersion, coreDeltaRange);
             var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
-            // The P0 and private curve delta APIs both report kHz. The UI model
-            // stores MHz, so the limits above are already the corresponding MHz.
-            var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
 
             for (var i = first; i <= last; i++)
             {
