@@ -372,6 +372,69 @@ public class GPUOverclockController
     }
 
     /// <summary>
+    /// Reconstructs the user's uncapped curve proposal from the live driver
+    /// baseline and persisted per-point offsets. The editor must never use the
+    /// currently voltage-capped driver table as its editable source of truth,
+    /// otherwise raising or disabling a cap cannot restore the points it flattened.
+    /// </summary>
+    public GPUVoltageCurvePoint[] GetVoltageCurveProposal()
+    {
+        var liveCurve = GetVoltageCurve();
+        if (liveCurve.Length == 0)
+            return liveCurve;
+
+        var savedCurve = _settings.Store.VoltageCurve;
+        if (savedCurve.Count == 0)
+        {
+            var info = _settings.Store.Info;
+            var globalOffsetCurve = GetVoltageCurveWithCoreOffset(info.CoreDeltaMhz);
+            return globalOffsetCurve.Length == liveCurve.Length ? globalOffsetCurve : liveCurve;
+        }
+
+        try
+        {
+            NVAPI.Initialize();
+            var gpu = NVAPI.GetGPU();
+            var gpuId = gpu is null ? null : NVAPI.GetGPUId(gpu);
+            if (string.IsNullOrWhiteSpace(gpuId) ||
+                !string.Equals(gpuId, _settings.Store.VoltageCurveGpuId, StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Instance.Trace($"Saved V/F curve belongs to a different GPU; using the live driver curve for preview.");
+                return liveCurve;
+            }
+
+            var savedByIndex = savedCurve.ToDictionary(point => point.Index);
+            var proposal = liveCurve.ToArray();
+            for (var i = 0; i < proposal.Length; i++)
+            {
+                var point = proposal[i];
+                if (!point.IsEditable)
+                    continue;
+
+                if (!savedByIndex.TryGetValue(point.Index, out var saved) || saved.VoltageMv != point.VoltageMv)
+                {
+                    Log.Instance.Trace($"Saved V/F curve is incomplete or no longer matches the active driver curve. [index={point.Index}]");
+                    return liveCurve;
+                }
+
+                var frequency = point.StockFrequencyMhz + saved.OffsetMhz;
+                proposal[i] = point with
+                {
+                    FrequencyMhz = frequency,
+                    OffsetMhz = saved.OffsetMhz
+                };
+            }
+
+            return proposal;
+        }
+        catch (Exception ex)
+        {
+            Log.Instance.Trace($"Failed to reconstruct the uncapped V/F curve proposal.", ex);
+            return liveCurve;
+        }
+    }
+
+    /// <summary>
     /// Builds the reset-to-global-offset preview using the same NVAPI unit
     /// conversion as the driver apply path. This prevents older curve-table
     /// versions from showing a different reset curve than they receive.
