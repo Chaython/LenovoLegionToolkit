@@ -14,6 +14,8 @@ internal static class GPUVoltageReader
     private const uint VoltRailsStatusVersion1 = 0x0001004C;
     private const int MaxPhysicalGpus = 64;
 
+    private delegate IntPtr QueryInterfaceDelegate(uint interfaceId);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int EnumPhysicalGpusDelegate([Out] IntPtr[] gpuHandles, out int gpuCount);
 
@@ -48,7 +50,7 @@ internal static class GPUVoltageReader
     {
         try
         {
-            var queryInterface = Environment.Is64BitProcess
+            QueryInterfaceDelegate queryInterface = Environment.Is64BitProcess
                 ? QueryInterface64
                 : QueryInterface32;
 
@@ -61,7 +63,7 @@ internal static class GPUVoltageReader
             var readVoltage = Marshal.GetDelegateForFunctionPointer<ClientVoltRailsGetStatusDelegate>(voltagePointer);
 
             var handles = new IntPtr[MaxPhysicalGpus];
-            if (enumerate(handles, out var count) != 0 || count <= 0)
+            if (enumerate(handles, out var count) != 0 || count <= 0 || count > handles.Length)
                 return null;
 
             // NVAPI's GPU enumeration order is stable for the active physical adapters.
