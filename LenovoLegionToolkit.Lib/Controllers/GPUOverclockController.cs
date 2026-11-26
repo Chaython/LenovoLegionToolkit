@@ -768,7 +768,7 @@ public class GPUOverclockController
             return legacyApplied && !voltageRequested && !customCurveRequested;
         }
 
-        return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, maxCoreDeltaMhz * 1000, savedCurve);
+        return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, minCoreDeltaMhz * 1000, maxCoreDeltaMhz * 1000, savedCurve);
     }
 
     private static bool ApplyPerformanceStates(PhysicalGPU gpu, int coreDeltaKhz, int memoryDeltaKhz)
@@ -805,7 +805,7 @@ public class GPUOverclockController
     }
 
     private static bool ApplyClockCurve(PhysicalGPU gpu, GPUOverclockInfo info, PrivateClockBoostRangesV1.ClockBoostRange graphicsRange,
-        PrivateClockBoostRangesV1.ClockBoostRange? memoryRange, int coreDeltaKhz, int memoryDeltaKhz, int maxCoreDeltaKhz,
+        PrivateClockBoostRangesV1.ClockBoostRange? memoryRange, int coreDeltaKhz, int memoryDeltaKhz, int minCoreDeltaKhz, int maxCoreDeltaKhz,
         global::System.Collections.Generic.IReadOnlyList<GPUVoltageCurveOffset>? savedCurve)
     {
         var voltageMv = info.VoltageLockMv > 0 ? info.VoltageLockMv : info.VoltageCapMv;
@@ -847,9 +847,8 @@ public class GPUOverclockController
             var deltas = currentDeltas.ToArray();
             var expectedCurve = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(lastIndex - firstIndex + 1);
             // Match the native V/F table units used by GetVoltageCurve().
-            var (coreDeltaRange, _) = GetClockDeltaRangesMhz();
-            var minimumOffsetMhz = coreDeltaRange.Min * clockMultiplier;
-            var maximumOffsetMhz = coreDeltaRange.Max * clockMultiplier;
+            var minimumOffsetMhz = (minCoreDeltaKhz / 1000) * clockMultiplier;
+            var maximumOffsetMhz = (maxCoreDeltaKhz / 1000) * clockMultiplier;
 
             // Construct one effective native curve for every path (custom curve,
             // global offset, voltage cap, or voltage lock). The editor uses this
