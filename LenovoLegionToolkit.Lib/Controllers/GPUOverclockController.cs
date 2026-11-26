@@ -327,19 +327,20 @@ public class GPUOverclockController
             var (points, structVersion) = ReadCurvePoints(gpu);
             var deltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
             var coreDeltaRange = GetClockDeltaRangesMhz().Core;
-            var maxCoreDeltaKhz = coreDeltaRange.Max * 1000;
-            var curveDeltaMultiplier = structVersion == AdjustedClockCurveStructVersion ||
-                graphicsRange.Value.MaximumInkHz != 2 * maxCoreDeltaKhz ? 1 : 2;
+            // Both P0 FrequencyDeltaInkHz and the private boost-table deltas are
+            // expressed in kHz. Do not infer a multiplier from MaximumInkHz:
+            // that field is an absolute boost-frequency ceiling, not a delta unit.
+            var minimumOffsetMhz = coreDeltaRange.Min;
+            var maximumOffsetMhz = coreDeltaRange.Max;
             var first = graphicsRange.Value.FirstPointIndex;
             var last = Math.Min(graphicsRange.Value.LastPointIndex, Math.Min(points.Length, deltas.Length) - 1);
             if (first < 0 || last < first)
                 return [];
 
-            // Convert the public P0 delta envelope into the native V/F table
-            // units for this driver structure version. The private range itself
-            // can be an artificially narrow legacy envelope on laptop GPUs.
-            var minimumOffsetMhz = coreDeltaRange.Min * curveDeltaMultiplier;
-            var maximumOffsetMhz = coreDeltaRange.Max * curveDeltaMultiplier;
+            LogCurveRangeDiagnostics(gpu, graphicsRange.Value, points, deltas, structVersion, coreDeltaRange);
+            var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
+            // The P0 and private curve delta APIs both report kHz. The UI model
+            // stores MHz, so the limits above are already the corresponding MHz.
             var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
 
             for (var i = first; i <= last; i++)
@@ -459,10 +460,7 @@ public class GPUOverclockController
             var (points, structVersion) = ReadCurvePoints(gpu);
             var deltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
             var coreDeltaRange = GetClockDeltaRangesMhz().Core;
-            var maxCoreDeltaMhz = coreDeltaRange.Max;
-            var multiplier = structVersion == AdjustedClockCurveStructVersion ||
-                graphicsRange.Value.MaximumInkHz != 2 * maxCoreDeltaMhz * 1000 ? 1 : 2;
-            var requestedOffsetKhz = coreOffsetMhz * 1000 * multiplier;
+            var requestedOffsetKhz = coreOffsetMhz * 1000;
 
             return curve.Select(point =>
             {
@@ -472,8 +470,8 @@ public class GPUOverclockController
                 var stockKhz = GetStockFrequencyKhz(points, deltas, point.Index);
                 var targetKhz = stockKhz + requestedOffsetKhz;
                 var offsetKhz = targetKhz - stockKhz;
-                if (offsetKhz < coreDeltaRange.Min * 1000 * multiplier ||
-                    offsetKhz > coreDeltaRange.Max * 1000 * multiplier)
+                if (offsetKhz < coreDeltaRange.Min * 1000 ||
+                    offsetKhz > coreDeltaRange.Max * 1000)
                     throw new InvalidOperationException($"Core offset exceeds the P0 graphics delta range at {point.VoltageMv} mV.");
 
                 var stockMhz = stockKhz / 1000;
@@ -837,8 +835,9 @@ public class GPUOverclockController
                 return !offsetsRequested && voltageMv <= 0 && (savedCurve is null || savedCurve.Count == 0);
             }
 
-            var clockMultiplier = structVersion == AdjustedClockCurveStructVersion || graphicsRange.MaximumInkHz != 2 * maxCoreDeltaKhz ? 1 : 2;
-            var coreOffsetKhz = coreDeltaKhz * clockMultiplier;
+            // P0 delta limits and PrivateClockBoostTableV1.GPUDelta are both kHz.
+            // Absolute MaximumInkHz is not a valid way to infer a delta multiplier.
+            var coreOffsetKhz = coreDeltaKhz;
 
             var anchorIndex = voltageMv > 0 ? FindCurvePoint(points, firstIndex, lastIndex, voltageMv) : -1;
             if (voltageMv > 0 && anchorIndex < 0)
@@ -846,9 +845,9 @@ public class GPUOverclockController
 
             var deltas = currentDeltas.ToArray();
             var expectedCurve = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(lastIndex - firstIndex + 1);
-            // Match the native V/F table units used by GetVoltageCurve().
-            var minimumOffsetMhz = (minCoreDeltaKhz / 1000) * clockMultiplier;
-            var maximumOffsetMhz = (maxCoreDeltaKhz / 1000) * clockMultiplier;
+            // Convert the raw NVAPI P0 delta envelope from kHz to the editor's MHz.
+            var minimumOffsetMhz = minCoreDeltaKhz / 1000;
+            var maximumOffsetMhz = maxCoreDeltaKhz / 1000;
 
             // Construct one effective native curve for every path (custom curve,
             // global offset, voltage cap, or voltage lock). The editor uses this
@@ -1011,6 +1010,41 @@ public class GPUOverclockController
 
             return !offsetsRequested && voltageMv <= 0 && (savedCurve is null || savedCurve.Count == 0);
         }
+    }
+
+    private static void LogCurveRangeDiagnostics(
+        PhysicalGPU gpu,
+        PrivateClockBoostRangesV1.ClockBoostRange graphicsRange,
+        PrivateClientClkVFPointsStatusV1.VFPoint[] points,
+        PrivateClockBoostTableV1.GPUDelta[] deltas,
+        int structVersion,
+        (int Min, int Max) p0RangeMhz)
+    {
+        var first = Math.Max(0, graphicsRange.FirstPointIndex);
+        var last = Math.Min(graphicsRange.LastPointIndex, Math.Min(points.Length, deltas.Length) - 1);
+        if (last < first)
+            return;
+
+        var minTableDeltaKhz = int.MaxValue;
+        var maxTableDeltaKhz = int.MinValue;
+        var editableCount = 0;
+        for (var i = first; i <= last; i++)
+        {
+            if (deltas[i].PointMode != 0)
+                continue;
+
+            editableCount++;
+            minTableDeltaKhz = Math.Min(minTableDeltaKhz, deltas[i].FrequencyDeltaInkHz);
+            maxTableDeltaKhz = Math.Max(maxTableDeltaKhz, deltas[i].FrequencyDeltaInkHz);
+        }
+
+        var rawP0MinKhz = p0RangeMhz.Min * 1000;
+        var rawP0MaxKhz = p0RangeMhz.Max * 1000;
+        Log.Instance.Trace(
+            $"NVAPI V/F limits [gpu={NVAPI.GetGPUId(gpu)}, struct={structVersion}, points={first}..{last}, editable={editableCount}, " +
+            $"P0DeltaKhz={rawP0MinKhz}..{rawP0MaxKhz}, P0DeltaMhz={p0RangeMhz.Min}..{p0RangeMhz.Max}, " +
+            $"BoostAbsoluteKhz={graphicsRange.MinimumInkHz}..{graphicsRange.MaximumInkHz}, " +
+            $"CurrentEditableTableDeltaKhz={(editableCount > 0 ? $"{minTableDeltaKhz}..{maxTableDeltaKhz}" : "none")}]");
     }
 
     private const int DefaultCurveStructVersion = 1;
