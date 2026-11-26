@@ -312,9 +312,13 @@ public partial class OverclockDiscreteGPUSettingsWindow
             }
 
             var temperature = telemetry.TemperatureCelsius >= 0 ? $"{telemetry.TemperatureCelsius} °C" : "N/A";
+            var voltage = telemetry.CoreVoltageVolts is { } coreVoltage
+                ? $"{coreVoltage:F3} V"
+                : "N/A";
+
             _curveTelemetry.Text =
                 $"Live: {temperature}  •  {telemetry.UtilizationPercent}% load  •  " +
-                $"{telemetry.CoreClockMhz} MHz core  •  {telemetry.MemoryClockMhz} MHz memory  •  Voltage: not exposed by this NVAPI path";
+                $"{telemetry.CoreClockMhz} MHz core  •  {telemetry.MemoryClockMhz} MHz memory  •  {voltage} core voltage";
         }
         finally
         {
