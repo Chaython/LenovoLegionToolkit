@@ -846,7 +846,7 @@ public class GPUOverclockController
 
                 if (!TryApplyVoltageLimitToCurve(expectedCurve, voltageMv, out var cappedCurve, out var capError))
                 {
-                    Log.Instance.Trace($"{capError}");
+                    Log.Instance.Trace($"Voltage cap rejected: {capError}");
                     return false;
                 }
 
