@@ -89,10 +89,10 @@ public partial class OverclockDiscreteGPUSettingsWindow
             ? "No editable NVIDIA voltage/frequency curve is available on this GPU."
             : $"{curve.Length} driver points loaded. Solid points are editable; hollow points are driver-controlled.";
         var editablePointCount = curve.Count(p => p.IsEditable);
-        _curvePointCountSlider.Minimum = Math.Min(8, Math.Max(1, editablePointCount));
+        _curvePointCountSlider.Minimum = Math.Min(1, editablePointCount);
         _curvePointCountSlider.Maximum = Math.Max(_curvePointCountSlider.Minimum, editablePointCount);
-        _curvePointCountSlider.Value = Math.Min(32, editablePointCount);
-        _curvePointCountSlider.IsEnabled = editablePointCount > _curvePointCountSlider.Minimum;
+        _curvePointCountSlider.Value = Math.Min(7, editablePointCount);
+        _curvePointCountSlider.IsEnabled = editablePointCount > 1;
         UpdateCurvePointCountText();
         _voltageCurveCanvas.IsEnabled = editablePointCount > 0;
         DrawVoltageCurve();
@@ -339,8 +339,8 @@ public partial class OverclockDiscreteGPUSettingsWindow
         if (_curvePointCountValue is null || _voltageCurvePoints is null)
             return;
 
-        var visible = GetVisibleEditablePointIndices();
-        if (_selectedCurvePoint >= 0 && !visible.Contains(_selectedCurvePoint))
+        var groups = GetEditablePointGroups();
+        if (_selectedCurvePoint >= 0 && !groups.Any(group => group.Contains(_selectedCurvePoint)))
             _selectedCurvePoint = -1;
 
         UpdateCurvePointCountText();
@@ -353,37 +353,44 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return;
 
         var total = _voltageCurvePoints.Count(p => p.IsEditable);
-        var visible = Math.Min(total, (int)Math.Round(_curvePointCountSlider.Value));
-        _curvePointCountValue.Text = $"{visible} / {total} points";
+        var handles = GetEditablePointGroups().Count;
+        var average = handles == 0 ? 0 : (int)Math.Ceiling(total / (double)handles);
+        _curvePointCountValue.Text = $"{handles} handles / {total} driver points (~{average} each)";
     }
 
-    private HashSet<int> GetVisibleEditablePointIndices()
+    // Partition editable native points into balanced, contiguous groups. Every
+    // visible handle represents one group; all native points remain in the table.
+    private List<List<int>> GetEditablePointGroups()
     {
-        var editableIndices = _voltageCurvePoints
+        var editable = _voltageCurvePoints
             .Select((point, index) => (point, index))
             .Where(item => item.point.IsEditable)
             .Select(item => item.index)
             .ToArray();
 
-        var visibleCount = Math.Min(editableIndices.Length, Math.Max(1, (int)Math.Round(_curvePointCountSlider?.Value ?? editableIndices.Length)));
-        var visible = new HashSet<int>();
-        if (visibleCount == 0)
-            return visible;
-
-        if (visibleCount == 1)
+        var groupCount = Math.Min(editable.Length,
+            Math.Max(1, (int)Math.Round(_curvePointCountSlider?.Value ?? editable.Length)));
+        var groups = new List<List<int>>(groupCount);
+        for (var group = 0; group < groupCount; group++)
         {
-            visible.Add(editableIndices[editableIndices.Length / 2]);
-            return visible;
+            var start = (int)Math.Floor(group * editable.Length / (double)groupCount);
+            var end = (int)Math.Floor((group + 1) * editable.Length / (double)groupCount);
+            if (end > start)
+                groups.Add(editable[start..end].ToList());
         }
 
-        for (var i = 0; i < visibleCount; i++)
-        {
-            var sourceIndex = (int)Math.Round(i * (editableIndices.Length - 1d) / (visibleCount - 1d));
-            visible.Add(editableIndices[sourceIndex]);
-        }
-
-        return visible;
+        return groups;
     }
+
+    private List<int> GetSelectedEditablePointGroup()
+    {
+        if (_selectedCurvePoint < 0)
+            return [];
+        return GetEditablePointGroups().FirstOrDefault(group => group.Contains(_selectedCurvePoint)) ?? [];
+    }
+
+    private int GetGroupHandleIndex(List<int> group) =>
+        group.Count == 0 ? -1 : group[group.Count / 2];
 
     private void VoltageCurveCanvas_OnSizeChanged(object sender, SizeChangedEventArgs e) => DrawVoltageCurve();
 
@@ -485,21 +492,18 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return -1;
 
         var nearestIndex = -1;
-        var nearestDistance = 13d;
-        var visibleEditablePoints = GetVisibleEditablePointIndices();
-        for (var i = 0; i < _voltageCurvePoints.Count; i++)
+        var nearestDistance = 15d;
+        foreach (var group in GetEditablePointGroups())
         {
-            var point = _voltageCurvePoints[i];
-            if (!point.IsEditable || !visibleEditablePoints.Contains(i))
-                continue;
-
+            var handleIndex = GetGroupHandleIndex(group);
+            var point = _voltageCurvePoints[handleIndex];
             var x = MapVoltageToX(point.VoltageMv, bounds);
             var y = MapFrequencyToY(point.FrequencyMhz, bounds);
             var distance = Math.Sqrt(Math.Pow(position.X - x, 2) + Math.Pow(position.Y - y, 2));
             if (distance < nearestDistance)
             {
                 nearestDistance = distance;
-                nearestIndex = i;
+                nearestIndex = handleIndex;
             }
         }
 
@@ -511,30 +515,60 @@ public partial class OverclockDiscreteGPUSettingsWindow
         if (_selectedCurvePoint < 0 || _selectedCurvePoint >= _voltageCurvePoints.Count)
             return;
 
-        var point = _voltageCurvePoints[_selectedCurvePoint];
         var bounds = _dragCurveBounds ?? GetCurveBounds();
         var clampedY = Math.Clamp(mouseY, bounds.Top, bounds.Top + bounds.Height);
-        var frequency = (int)Math.Round(MapYToFrequency(clampedY, bounds));
-        var minimum = point.StockFrequencyMhz + point.MinimumOffsetMhz;
-        var maximum = point.StockFrequencyMhz + point.MaximumOffsetMhz;
-
-        if (_selectedCurvePoint > 0)
-            minimum = Math.Max(minimum, _voltageCurvePoints[_selectedCurvePoint - 1].FrequencyMhz);
-        if (_selectedCurvePoint < _voltageCurvePoints.Count - 1)
-            maximum = Math.Min(maximum, _voltageCurvePoints[_selectedCurvePoint + 1].FrequencyMhz);
-
-        if (minimum > maximum)
-            return;
-
-        frequency = Math.Clamp(frequency, minimum, maximum);
-        _voltageCurvePoints[_selectedCurvePoint] = point with
-        {
-            FrequencyMhz = frequency,
-            OffsetMhz = frequency - point.StockFrequencyMhz
-        };
+        var targetFrequency = (int)Math.Round(MapYToFrequency(clampedY, bounds));
+        ApplySelectedGroupFrequency(targetFrequency);
         _curveReset = false;
         UpdateCurvePointDetails();
         DrawVoltageCurve();
+    }
+
+    // Move every native point in the selected group by one common delta. This
+    // preserves the local curve shape. The delta is bounded by each point's driver
+    // limits and by the unchanged points immediately outside the group.
+    private int ApplySelectedGroupFrequency(int requestedHandleFrequency)
+    {
+        var group = GetSelectedEditablePointGroup();
+        if (group.Count == 0)
+            return _selectedCurvePoint >= 0 ? _voltageCurvePoints[_selectedCurvePoint].FrequencyMhz : requestedHandleFrequency;
+
+        var handleIndex = GetGroupHandleIndex(group);
+        var handle = _voltageCurvePoints[handleIndex];
+        var requestedDelta = requestedHandleFrequency - handle.FrequencyMhz;
+        var minimumDelta = int.MinValue;
+        var maximumDelta = int.MaxValue;
+
+        foreach (var index in group)
+        {
+            var point = _voltageCurvePoints[index];
+            minimumDelta = Math.Max(minimumDelta, point.StockFrequencyMhz + point.MinimumOffsetMhz - point.FrequencyMhz);
+            maximumDelta = Math.Min(maximumDelta, point.StockFrequencyMhz + point.MaximumOffsetMhz - point.FrequencyMhz);
+        }
+
+        var first = group[0];
+        var last = group[^1];
+        if (first > 0)
+            minimumDelta = Math.Max(minimumDelta, _voltageCurvePoints[first - 1].FrequencyMhz - _voltageCurvePoints[first].FrequencyMhz);
+        if (last < _voltageCurvePoints.Count - 1)
+            maximumDelta = Math.Min(maximumDelta, _voltageCurvePoints[last + 1].FrequencyMhz - _voltageCurvePoints[last].FrequencyMhz);
+
+        if (minimumDelta > maximumDelta)
+            return handle.FrequencyMhz;
+
+        var delta = Math.Clamp(requestedDelta, minimumDelta, maximumDelta);
+        foreach (var index in group)
+        {
+            var point = _voltageCurvePoints[index];
+            var frequency = point.FrequencyMhz + delta;
+            _voltageCurvePoints[index] = point with
+            {
+                FrequencyMhz = frequency,
+                OffsetMhz = frequency - point.StockFrequencyMhz
+            };
+        }
+
+        return handle.FrequencyMhz + delta;
     }
 
     private void CurvePointValueEditor_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -578,7 +612,6 @@ public partial class OverclockDiscreteGPUSettingsWindow
         if (_selectedCurvePoint < 0 || _selectedCurvePoint >= _voltageCurvePoints.Count)
             return;
 
-        var point = _voltageCurvePoints[_selectedCurvePoint];
         if (!int.TryParse(editor.Text.Trim(), NumberStyles.Integer, CultureInfo.CurrentCulture, out var frequency))
         {
             _curveStatus.Text = "Enter a valid frequency in MHz.";
@@ -586,31 +619,12 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return;
         }
 
-        var minimum = point.StockFrequencyMhz + point.MinimumOffsetMhz;
-        var maximum = point.StockFrequencyMhz + point.MaximumOffsetMhz;
-        if (_selectedCurvePoint > 0)
-            minimum = Math.Max(minimum, _voltageCurvePoints[_selectedCurvePoint - 1].FrequencyMhz);
-        if (_selectedCurvePoint < _voltageCurvePoints.Count - 1)
-            maximum = Math.Min(maximum, _voltageCurvePoints[_selectedCurvePoint + 1].FrequencyMhz);
-
-        if (minimum > maximum)
-        {
-            _curveStatus.Text = "This point has no valid frequency range between its neighbors.";
-            DrawVoltageCurve();
-            return;
-        }
-
         var requested = frequency;
-        frequency = Math.Clamp(frequency, minimum, maximum);
-        _voltageCurvePoints[_selectedCurvePoint] = point with
-        {
-            FrequencyMhz = frequency,
-            OffsetMhz = frequency - point.StockFrequencyMhz
-        };
+        frequency = ApplySelectedGroupFrequency(frequency);
         _curveReset = false;
         _curveStatus.Text = requested == frequency
-            ? $"Set {point.VoltageMv} mV point to {frequency} MHz. Preview only; Apply to send it to the driver."
-            : $"Clamped requested {requested} MHz to {frequency} MHz to respect driver and neighboring-point limits.";
+            ? $"Shifted the selected group to {frequency} MHz at its handle. Preview only; Apply to send all grouped driver points."
+            : $"Clamped requested {requested} MHz to {frequency} MHz to respect driver limits and neighboring points across the group.";
         DrawVoltageCurve();
     }
 
@@ -690,11 +704,11 @@ public partial class OverclockDiscreteGPUSettingsWindow
             curve.Points.Add(new Point(MapVoltageToX(point.VoltageMv, bounds), MapFrequencyToY(point.FrequencyMhz, bounds)));
         _voltageCurveCanvas.Children.Add(curve);
 
-        var visibleEditablePoints = GetVisibleEditablePointIndices();
+        var handleIndices = GetEditablePointGroups().Select(GetGroupHandleIndex).ToHashSet();
         for (var i = 0; i < _voltageCurvePoints.Count; i++)
         {
             var point = _voltageCurvePoints[i];
-            if (point.IsEditable && !visibleEditablePoints.Contains(i) && i != _selectedCurvePoint)
+            if (point.IsEditable && !handleIndices.Contains(i) && i != _selectedCurvePoint)
                 continue;
 
             var selected = i == _selectedCurvePoint;
