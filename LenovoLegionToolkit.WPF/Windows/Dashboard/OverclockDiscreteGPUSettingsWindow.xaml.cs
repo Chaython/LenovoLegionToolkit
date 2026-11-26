@@ -949,20 +949,19 @@ public partial class OverclockDiscreteGPUSettingsWindow
     {
         // Reset is a preview-only operation. The saved curve is not changed until Save
         // or the user explicitly confirms Apply.
-        _curveReset = true;
         var coreOffset = (int)_coreSlider.Value;
-        for (var i = 0; i < _voltageCurvePoints.Count; i++)
+        var resetCurve = _gpuOverclockController.GetVoltageCurveWithCoreOffset(coreOffset);
+        if (resetCurve.Length != _voltageCurvePoints.Count)
         {
-            var point = _voltageCurvePoints[i];
-            _voltageCurvePoints[i] = point with
-            {
-                FrequencyMhz = point.StockFrequencyMhz + coreOffset,
-                OffsetMhz = coreOffset
-            };
+            _curveStatus.Text = "Could not build a reset curve within the current driver-supported range. The existing preview was kept.";
+            return;
         }
 
+        _curveReset = true;
+        _voltageCurvePoints.Clear();
+        _voltageCurvePoints.AddRange(resetCurve);
         _uncappedVoltageCurvePoints.Clear();
-        _uncappedVoltageCurvePoints.AddRange(_voltageCurvePoints);
+        _uncappedVoltageCurvePoints.AddRange(resetCurve);
         RefreshVoltageCurvePreview();
         _selectedCurvePoint = -1;
         _dragCurveBounds = null;
