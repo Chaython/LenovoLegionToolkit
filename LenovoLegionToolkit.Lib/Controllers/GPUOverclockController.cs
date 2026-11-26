@@ -326,18 +326,17 @@ public class GPUOverclockController
 
             var (points, structVersion) = ReadCurvePoints(gpu);
             var deltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
-            var coreDeltaRange = GetClockDeltaRangesMhz().Core;
-            // Both P0 FrequencyDeltaInkHz and the private boost-table deltas are
-            // expressed in kHz. Do not infer a multiplier from MaximumInkHz:
-            // that field is an absolute boost-frequency ceiling, not a delta unit.
-            var minimumOffsetMhz = coreDeltaRange.Min;
-            var maximumOffsetMhz = coreDeltaRange.Max;
+            var coreDeltaRangeKhz = GetClockDeltaRangesKhz().Core;
+            // P0 FrequencyDeltaInkHz and private boost-table deltas are both kHz.
+            // Keep the raw NVAPI bounds until the final MHz conversion.
+            var minimumOffsetMhz = coreDeltaRangeKhz.Min / 1000;
+            var maximumOffsetMhz = coreDeltaRangeKhz.Max / 1000;
             var first = graphicsRange.Value.FirstPointIndex;
             var last = Math.Min(graphicsRange.Value.LastPointIndex, Math.Min(points.Length, deltas.Length) - 1);
             if (first < 0 || last < first)
                 return [];
 
-            LogCurveRangeDiagnostics(gpu, graphicsRange.Value, points, deltas, structVersion, coreDeltaRange);
+            LogCurveRangeDiagnostics(gpu, graphicsRange.Value, points, deltas, structVersion, coreDeltaRangeKhz);
             var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
 
             for (var i = first; i <= last; i++)
@@ -456,7 +455,7 @@ public class GPUOverclockController
 
             var (points, structVersion) = ReadCurvePoints(gpu);
             var deltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
-            var coreDeltaRange = GetClockDeltaRangesMhz().Core;
+            var coreDeltaRangeKhz = GetClockDeltaRangesKhz().Core;
             var requestedOffsetKhz = coreOffsetMhz * 1000;
 
             return curve.Select(point =>
@@ -467,8 +466,8 @@ public class GPUOverclockController
                 var stockKhz = GetStockFrequencyKhz(points, deltas, point.Index);
                 var targetKhz = stockKhz + requestedOffsetKhz;
                 var offsetKhz = targetKhz - stockKhz;
-                if (offsetKhz < coreDeltaRange.Min * 1000 ||
-                    offsetKhz > coreDeltaRange.Max * 1000)
+                if (offsetKhz < coreDeltaRangeKhz.Min ||
+                    offsetKhz > coreDeltaRangeKhz.Max)
                     throw new InvalidOperationException($"Core offset exceeds the P0 graphics delta range at {point.VoltageMv} mV.");
 
                 var stockMhz = stockKhz / 1000;
@@ -683,8 +682,14 @@ public class GPUOverclockController
 
     private ((int Min, int Max) Core, (int Min, int Max) Memory) GetClockDeltaRangesMhz()
     {
-        var coreFallback = (FallbackMinCoreDeltaMhz, FallbackMaxCoreDeltaMhz);
-        var memoryFallback = (FallbackMinMemoryDeltaMhz, FallbackMaxMemoryDeltaMhz);
+        var (coreKhz, memoryKhz) = GetClockDeltaRangesKhz();
+        return ((coreKhz.Min / 1000, coreKhz.Max / 1000), (memoryKhz.Min / 1000, memoryKhz.Max / 1000));
+    }
+
+    private ((int Min, int Max) Core, (int Min, int Max) Memory) GetClockDeltaRangesKhz()
+    {
+        var coreFallback = (FallbackMinCoreDeltaMhz * 1000, FallbackMaxCoreDeltaMhz * 1000);
+        var memoryFallback = (FallbackMinMemoryDeltaMhz * 1000, FallbackMaxMemoryDeltaMhz * 1000);
 
         try
         {
@@ -698,8 +703,8 @@ public class GPUOverclockController
             if (!states.Clocks.TryGetValue(PerformanceStateId.P0_3DPerformance, out var clocks))
                 return (coreFallback, memoryFallback);
 
-            return (GetClockDeltaRangeMhz(clocks, PublicClockDomain.Graphics, FallbackMinCoreDeltaMhz, FallbackMaxCoreDeltaMhz),
-                GetClockDeltaRangeMhz(clocks, PublicClockDomain.Memory, FallbackMinMemoryDeltaMhz, FallbackMaxMemoryDeltaMhz));
+            return (GetClockDeltaRangeKhz(clocks, PublicClockDomain.Graphics, coreFallback.Item1, coreFallback.Item2),
+                GetClockDeltaRangeKhz(clocks, PublicClockDomain.Memory, memoryFallback.Item1, memoryFallback.Item2));
         }
         catch (Exception ex)
         {
@@ -708,20 +713,19 @@ public class GPUOverclockController
         }
     }
 
-    private static (int Min, int Max) GetClockDeltaRangeMhz(IPerformanceStates20ClockEntry[] clocks, PublicClockDomain domain, int fallbackMinMhz, int fallbackMaxMhz)
+    private static (int Min, int Max) GetClockDeltaRangeKhz(IPerformanceStates20ClockEntry[] clocks, PublicClockDomain domain, int fallbackMinKhz, int fallbackMaxKhz)
     {
         var clock = clocks.FirstOrDefault(c => c.DomainId == domain);
         if (clock is null)
-            return (fallbackMinMhz, fallbackMaxMhz);
+            return (fallbackMinKhz, fallbackMaxKhz);
 
         var range = clock.FrequencyDeltaInkHz.DeltaRange;
         if (range.Minimum == 0 && range.Maximum == 0)
-            return (fallbackMinMhz, fallbackMaxMhz);
+            return (fallbackMinKhz, fallbackMaxKhz);
 
-        var minimumMhz = range.Minimum / 1000;
-        var maximumMhz = range.Maximum / 1000;
-
-        return minimumMhz > maximumMhz ? (fallbackMinMhz, fallbackMaxMhz) : (minimumMhz, maximumMhz);
+        return range.Minimum > range.Maximum
+            ? (fallbackMinKhz, fallbackMaxKhz)
+            : (range.Minimum, range.Maximum);
     }
 
     private bool SetOverclockInfo(PhysicalGPU gpu, GPUOverclockInfo info)
@@ -763,7 +767,8 @@ public class GPUOverclockController
             return legacyApplied && !voltageRequested && !customCurveRequested;
         }
 
-        return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, minCoreDeltaMhz * 1000, maxCoreDeltaMhz * 1000, savedCurve);
+        var (coreDeltaRangeKhz, _) = GetClockDeltaRangesKhz();
+        return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, coreDeltaRangeKhz.Min, coreDeltaRangeKhz.Max, savedCurve);
     }
 
     private static bool ApplyPerformanceStates(PhysicalGPU gpu, int coreDeltaKhz, int memoryDeltaKhz)
@@ -1015,7 +1020,7 @@ public class GPUOverclockController
         PrivateClientClkVFPointsStatusV1.VFPoint[] points,
         PrivateClockBoostTableV1.GPUDelta[] deltas,
         int structVersion,
-        (int Min, int Max) p0RangeMhz)
+        (int Min, int Max) p0RangeKhz)
     {
         var first = Math.Max(0, graphicsRange.FirstPointIndex);
         var last = Math.Min(graphicsRange.LastPointIndex, Math.Min(points.Length, deltas.Length) - 1);
@@ -1035,11 +1040,11 @@ public class GPUOverclockController
             maxTableDeltaKhz = Math.Max(maxTableDeltaKhz, deltas[i].FrequencyDeltaInkHz);
         }
 
-        var rawP0MinKhz = p0RangeMhz.Min * 1000;
-        var rawP0MaxKhz = p0RangeMhz.Max * 1000;
+        var rawP0MinKhz = p0RangeKhz.Min;
+        var rawP0MaxKhz = p0RangeKhz.Max;
         Log.Instance.Trace(
             $"NVAPI V/F limits [gpu={NVAPI.GetGPUId(gpu)}, struct={structVersion}, points={first}..{last}, editable={editableCount}, " +
-            $"P0DeltaKhz={rawP0MinKhz}..{rawP0MaxKhz}, P0DeltaMhz={p0RangeMhz.Min}..{p0RangeMhz.Max}, " +
+            $"P0DeltaKhz={rawP0MinKhz}..{rawP0MaxKhz}, P0DeltaMhz={rawP0MinKhz / 1000}..{rawP0MaxKhz / 1000}, " +
             $"BoostAbsoluteKhz={graphicsRange.MinimumInkHz}..{graphicsRange.MaximumInkHz}, " +
             $"CurrentEditableTableDeltaKhz={(editableCount > 0 ? $"{minTableDeltaKhz}..{maxTableDeltaKhz}" : "none")}]");
     }
