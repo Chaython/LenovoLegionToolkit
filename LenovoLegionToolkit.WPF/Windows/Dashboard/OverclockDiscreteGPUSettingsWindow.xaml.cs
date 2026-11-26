@@ -4,6 +4,12 @@ using System.Globalization;
 using System.Windows.Controls;
 using System.Windows;
 using System.Windows.Input;
+using System.Collections.Generic;
+using System.Linq;
+using System.Windows.Media;
+using System.Windows.Threading;
+using System.Windows.Shapes;
+using LenovoLegionToolkit.Lib.Settings;
 using LenovoLegionToolkit.Lib;
 using LenovoLegionToolkit.Lib.Controllers;
 using LenovoLegionToolkit.WPF.Resources;
@@ -15,6 +21,13 @@ public partial class OverclockDiscreteGPUSettingsWindow
 {
 
     private readonly GPUOverclockController _gpuOverclockController = IoCContainer.Resolve<GPUOverclockController>();
+    private readonly List<GPUVoltageCurvePoint> _voltageCurvePoints = [];
+    private int _selectedCurvePoint = -1;
+    private bool _isDraggingCurvePoint;
+    private bool _curveReset;
+    private bool _telemetryRefreshInProgress;
+    private readonly DispatcherTimer _telemetryTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency)? _dragCurveBounds;
 
     public OverclockDiscreteGPUSettingsWindow()
     {
@@ -22,11 +35,20 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
         var (enabled, info) = _gpuOverclockController.GetState();
 
-        _applyCloseGrid.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
-        _saveGrid.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
+        // Applying from this editor must be possible even when overclocking was
+        // previously disabled; ApplyStateWithRollbackAsync enables the saved state.
+        _applyCloseGrid.Visibility = Visibility.Visible;
+        _saveGrid.Visibility = Visibility.Collapsed;
         _contentGrid.IsEnabled = false;
 
-        Loaded += async (_, _) => await PopulateAsync(info);
+        Loaded += async (_, _) =>
+        {
+            await PopulateAsync(info);
+            _telemetryTimer.Start();
+            await RefreshTelemetryAsync();
+        };
+        Closed += (_, _) => _telemetryTimer.Stop();
+        _telemetryTimer.Tick += async (_, _) => await RefreshTelemetryAsync();
     }
 
     private async Task PopulateAsync(GPUOverclockInfo info)
@@ -55,6 +77,25 @@ public partial class OverclockDiscreteGPUSettingsWindow
             : _voltageLockSlider.Minimum;
 
         UpdateValueTextBoxes();
+
+        var curve = await Task.Run(_gpuOverclockController.GetVoltageCurve);
+        _voltageCurvePoints.Clear();
+        _voltageCurvePoints.AddRange(curve);
+        // Only show the editor when the active NVIDIA driver exposes a usable
+        // editable V/F table. AMD GPUs (and unsupported NVIDIA GPUs) return no
+        // curve from the NVAPI-backed controller, so the selector is hidden.
+        _voltageCurveSection.Visibility = curve.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _curveStatus.Text = curve.Length == 0
+            ? "No editable NVIDIA voltage/frequency curve is available on this GPU."
+            : $"{curve.Length} driver points loaded. Solid points are editable; hollow points are driver-controlled.";
+        var editablePointCount = curve.Count(p => p.IsEditable);
+        _curvePointCountSlider.Minimum = Math.Min(1, editablePointCount);
+        _curvePointCountSlider.Maximum = Math.Max(_curvePointCountSlider.Minimum, editablePointCount);
+        _curvePointCountSlider.Value = Math.Min(7, editablePointCount);
+        _curvePointCountSlider.IsEnabled = editablePointCount > 1;
+        UpdateCurvePointCountText();
+        _voltageCurveCanvas.IsEnabled = editablePointCount > 0;
+        DrawVoltageCurve();
 
         _contentGrid.IsEnabled = true;
     }
@@ -173,41 +214,667 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
     private async void ApplyButton_Click(object sender, RoutedEventArgs e)
     {
-        Save();
-        ShowApplyResult(await ApplyAsync());
+        var applied = await ApplyAsync();
+        if (applied.HasValue)
+            ShowApplyResult(applied.Value);
     }
 
     private async void ApplyAndCloseButton_Click(object sender, RoutedEventArgs e)
     {
-        Save();
-        ShowApplyResult(await ApplyAsync());
-        Close();
+        var applied = await ApplyAsync();
+        if (!applied.HasValue)
+            return;
+
+        ShowApplyResult(applied.Value);
+        if (applied.Value)
+            Close();
     }
 
     private static void ShowApplyResult(bool applied)
     {
         var message = applied ? Resource.Snackbar_SettingsApplied_Message : Resource.Snackbar_SettingsNotApplied_Message;
         var type = applied ? SnackbarType.Success : SnackbarType.Warning;
-
         SnackbarHelper.Show(Resource.OverclockDiscreteGPUSettingsWindow_Title, message, type);
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
-        Save();
-        SnackbarHelper.Show(Resource.OverclockDiscreteGPUSettingsWindow_Title, Resource.Snackbar_SettingsApplied_Message, SnackbarType.Success);
+        if (!Save())
+            return;
+
+        MessageBox.Show(this,
+            "GPU overclock settings were saved for the next apply. No GPU changes have been applied.",
+            Resource.OverclockDiscreteGPUSettingsWindow_Title,
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
         Close();
     }
 
-    private void Save()
+    private GPUOverclockInfo BuildOverclockInfo()
     {
-        var (enabled, _) = _gpuOverclockController.GetState();
         int voltageLock = _voltageLockSlider.Value <= _voltageLockSlider.Minimum ? 0 : (int)_voltageLockSlider.Value;
         int voltageCap = _voltageCapSlider.Value <= _voltageCapSlider.Minimum ? 0 : (int)_voltageCapSlider.Value;
-        var info = new GPUOverclockInfo((int)_coreSlider.Value, (int)_memorySlider.Value, voltageLock, voltageCap);
-
-        _gpuOverclockController.SaveState(enabled, info);
+        return new GPUOverclockInfo((int)_coreSlider.Value, (int)_memorySlider.Value, voltageLock, voltageCap);
     }
 
-    private async Task<bool> ApplyAsync() => await _gpuOverclockController.ApplyStateAsync();
+    private bool Save()
+    {
+        if (_curveReset)
+            _gpuOverclockController.ClearVoltageCurve();
+        else if (_voltageCurvePoints.Count > 0 && !_gpuOverclockController.SaveVoltageCurve(_voltageCurvePoints))
+        {
+            _curveStatus.Text = "Curve was not saved: check that points are monotonic and within the driver-supported range.";
+            SnackbarHelper.Show(Resource.OverclockDiscreteGPUSettingsWindow_Title, Resource.Snackbar_SettingsNotApplied_Message, SnackbarType.Warning);
+            return false;
+        }
+
+        var (enabled, _) = _gpuOverclockController.GetState();
+        _gpuOverclockController.SaveState(enabled, BuildOverclockInfo());
+        return true;
+    }
+
+    private async Task<bool?> ApplyAsync()
+    {
+        var changedPoints = _voltageCurvePoints.Count(p => p.IsEditable && p.OffsetMhz != 0);
+        var confirmation = MessageBox.Show(this,
+            $"Apply the proposed GPU settings?\n\n" +
+            $"Core offset: {(int)_coreSlider.Value:+0;-0;0} MHz\n" +
+            $"Memory offset: {(int)_memorySlider.Value:+0;-0;0} MHz\n" +
+            $"Voltage cap: {(_voltageCapSlider.Value <= _voltageCapSlider.Minimum ? "Off" : ((int)_voltageCapSlider.Value).ToString())}\n" +
+            $"Voltage lock: {(_voltageLockSlider.Value <= _voltageLockSlider.Minimum ? "Off" : ((int)_voltageLockSlider.Value).ToString())}\n" +
+            $"Edited curve points: {changedPoints}\n\n" +
+            "This may cause instability. Keep the laptop connected to AC and monitor temperatures. " +
+            "If the driver rejects the change, the previous saved settings will be restored automatically.",
+            Resource.OverclockDiscreteGPUSettingsWindow_Title,
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (confirmation != MessageBoxResult.Yes)
+            return null;
+
+        var applied = await _gpuOverclockController.ApplyStateWithRollbackAsync(
+            BuildOverclockInfo(), _voltageCurvePoints, _curveReset);
+
+        _curveStatus.Text = applied
+            ? "Driver accepted the curve settings. This does not guarantee stability under load."
+            : "Apply failed or could not be verified. Previous saved settings were restored; confirm the GPU is back at stock/previous settings.";
+        if (applied)
+            _curveReset = false;
+
+        return applied;
+    }
+
+    private async Task RefreshTelemetryAsync()
+    {
+        if (_telemetryRefreshInProgress || _curveTelemetry is null)
+            return;
+
+        _telemetryRefreshInProgress = true;
+        try
+        {
+            var telemetry = await Task.Run(_gpuOverclockController.GetOverclockTelemetry);
+            if (telemetry is null)
+            {
+                _curveTelemetry.Text = "Live GPU telemetry unavailable (GPU asleep, driver unavailable, or sensor read failed).";
+                return;
+            }
+
+            var temperature = telemetry.TemperatureCelsius >= 0 ? $"{telemetry.TemperatureCelsius} °C" : "N/A";
+            var voltage = telemetry.CoreVoltageMicrovolts is { } coreVoltage
+                ? $"{coreVoltage:N0} µV"
+                : "N/A";
+
+            _curveTelemetry.Text =
+                $"Live: {temperature}  •  {telemetry.UtilizationPercent}% load  •  " +
+                $"{telemetry.CoreClockMhz} MHz core  •  {telemetry.MemoryClockMhz} MHz memory  •  {voltage} core voltage";
+        }
+        finally
+        {
+            _telemetryRefreshInProgress = false;
+        }
+    }
+
+    private void CurvePointCountSlider_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_curvePointCountValue is null || _voltageCurvePoints is null)
+            return;
+
+        var groups = GetEditablePointGroups();
+        if (_selectedCurvePoint >= 0 && !groups.Any(group => group.Contains(_selectedCurvePoint)))
+            _selectedCurvePoint = -1;
+
+        UpdateCurvePointCountText();
+        DrawVoltageCurve();
+    }
+
+    private void UpdateCurvePointCountText()
+    {
+        if (_curvePointCountValue is null || _curvePointCountSlider is null)
+            return;
+
+        var total = _voltageCurvePoints.Count(p => p.IsEditable);
+        var handles = GetEditablePointGroups().Count;
+        var average = handles == 0 ? 0 : (int)Math.Ceiling(total / (double)handles);
+        _curvePointCountValue.Text = $"{handles} handles / {total} driver points (~{average} each)";
+    }
+
+    // Partition editable native points into balanced, contiguous groups. Every
+    // visible handle represents one group; all native points remain in the table.
+    private List<List<int>> GetEditablePointGroups()
+    {
+        var editable = _voltageCurvePoints
+            .Select((point, index) => (point, index))
+            .Where(item => item.point.IsEditable)
+            .Select(item => item.index)
+            .ToArray();
+
+        var groupCount = Math.Min(editable.Length,
+            Math.Max(1, (int)Math.Round(_curvePointCountSlider?.Value ?? editable.Length)));
+        var groups = new List<List<int>>(groupCount);
+        for (var group = 0; group < groupCount; group++)
+        {
+            var start = (int)Math.Floor(group * editable.Length / (double)groupCount);
+            var end = (int)Math.Floor((group + 1) * editable.Length / (double)groupCount);
+            if (end > start)
+                groups.Add(editable[start..end].ToList());
+        }
+
+        return groups;
+    }
+
+    private List<int> GetSelectedEditablePointGroup()
+    {
+        if (_selectedCurvePoint < 0)
+            return [];
+        return GetEditablePointGroups().FirstOrDefault(group => group.Contains(_selectedCurvePoint)) ?? [];
+    }
+
+    private int GetGroupHandleIndex(List<int> group) =>
+        group.Count == 0 ? -1 : group[group.Count / 2];
+
+    private void VoltageCurveCanvas_OnSizeChanged(object sender, SizeChangedEventArgs e) => DrawVoltageCurve();
+
+    private void VoltageCurveCanvas_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_voltageCurvePoints.Count == 0)
+            return;
+
+        var position = e.GetPosition(_voltageCurveCanvas);
+        var nearest = FindNearestEditablePoint(position);
+        if (nearest < 0)
+            return;
+
+        _selectedCurvePoint = nearest;
+        _voltageCurveCanvas.Focus();
+        _dragCurveBounds = GetCurveBounds();
+        _isDraggingCurvePoint = true;
+        _voltageCurveCanvas.CaptureMouse();
+        UpdateSelectedCurvePoint(position.Y);
+        e.Handled = true;
+    }
+
+    private void VoltageCurveCanvas_OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || Keyboard.Modifiers != ModifierKeys.Shift)
+            return;
+
+        e.Handled = true;
+        FlattenCurveFromSelectedPoint();
+    }
+
+    private void FlattenCurveFromSelectedPoint()
+    {
+        if (_selectedCurvePoint < 0 || _selectedCurvePoint >= _voltageCurvePoints.Count)
+        {
+            _curveStatus.Text = "Select a curve point first, then press Shift+Enter to flatten the curve to its right.";
+            return;
+        }
+
+        var tail = _voltageCurvePoints.Skip(_selectedCurvePoint).ToList();
+        if (tail.Any(point => !point.IsEditable))
+        {
+            _curveStatus.Text = "Cannot flatten the entire right-hand tail: it contains driver-controlled points that cannot be edited.";
+            return;
+        }
+
+        var minimum = tail.Max(point => point.StockFrequencyMhz + point.MinimumOffsetMhz);
+        var maximum = tail.Min(point => point.StockFrequencyMhz + point.MaximumOffsetMhz);
+        if (_selectedCurvePoint > 0)
+            minimum = Math.Max(minimum, _voltageCurvePoints[_selectedCurvePoint - 1].FrequencyMhz);
+
+        if (minimum > maximum)
+        {
+            _curveStatus.Text = "Cannot create a flat tail: the selected points do not share a common driver-supported frequency.";
+            return;
+        }
+
+        var targetFrequency = Math.Clamp(_voltageCurvePoints[_selectedCurvePoint].FrequencyMhz, minimum, maximum);
+        for (var i = _selectedCurvePoint; i < _voltageCurvePoints.Count; i++)
+        {
+            var point = _voltageCurvePoints[i];
+            _voltageCurvePoints[i] = point with
+            {
+                FrequencyMhz = targetFrequency,
+                OffsetMhz = targetFrequency - point.StockFrequencyMhz
+            };
+        }
+
+        _curveReset = false;
+        _curveStatus.Text = $"Flattened {_voltageCurvePoints.Count - _selectedCurvePoint} curve points from " +
+            $"{_voltageCurvePoints[_selectedCurvePoint].VoltageMv} mV at {targetFrequency} MHz. Preview only; Apply to send it to the driver.";
+        UpdateCurvePointDetails();
+        DrawVoltageCurve();
+    }
+
+    private void VoltageCurveCanvas_OnMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_isDraggingCurvePoint || _selectedCurvePoint < 0 || e.LeftButton != MouseButtonState.Pressed)
+            return;
+
+        UpdateSelectedCurvePoint(e.GetPosition(_voltageCurveCanvas).Y);
+    }
+
+    private void VoltageCurveCanvas_OnMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isDraggingCurvePoint)
+            return;
+
+        _isDraggingCurvePoint = false;
+        _dragCurveBounds = null;
+        _voltageCurveCanvas.ReleaseMouseCapture();
+        DrawVoltageCurve();
+    }
+
+    private int FindNearestEditablePoint(Point position)
+    {
+        var bounds = GetCurveBounds();
+        if (_voltageCurvePoints.Count == 0)
+            return -1;
+
+        var nearestIndex = -1;
+        var nearestDistance = 15d;
+        foreach (var group in GetEditablePointGroups())
+        {
+            var handleIndex = GetGroupHandleIndex(group);
+            var point = _voltageCurvePoints[handleIndex];
+            var x = MapVoltageToX(point.VoltageMv, bounds);
+            var y = MapFrequencyToY(point.FrequencyMhz, bounds);
+            var distance = Math.Sqrt(Math.Pow(position.X - x, 2) + Math.Pow(position.Y - y, 2));
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearestIndex = handleIndex;
+            }
+        }
+
+        return nearestIndex;
+    }
+
+    private void UpdateSelectedCurvePoint(double mouseY)
+    {
+        if (_selectedCurvePoint < 0 || _selectedCurvePoint >= _voltageCurvePoints.Count)
+            return;
+
+        var bounds = _dragCurveBounds ?? GetCurveBounds();
+        var clampedY = Math.Clamp(mouseY, bounds.Top, bounds.Top + bounds.Height);
+        var targetFrequency = (int)Math.Round(MapYToFrequency(clampedY, bounds));
+        ApplySelectedGroupFrequency(targetFrequency);
+        _curveReset = false;
+        UpdateCurvePointDetails();
+        DrawVoltageCurve();
+    }
+
+    // Move the selected group at full strength and taper the same movement into
+    // the neighboring editable points. This prevents hidden points at a group
+    // boundary from behaving like fixed walls while keeping a smooth curve.
+    private int ApplySelectedGroupFrequency(int requestedHandleFrequency)
+    {
+        var group = GetSelectedEditablePointGroup();
+        if (group.Count == 0)
+            return _selectedCurvePoint >= 0 ? _voltageCurvePoints[_selectedCurvePoint].FrequencyMhz : requestedHandleFrequency;
+
+        var handleIndex = GetGroupHandleIndex(group);
+        var handle = _voltageCurvePoints[handleIndex];
+        var requestedDelta = requestedHandleFrequency - handle.FrequencyMhz;
+        if (requestedDelta == 0)
+            return handle.FrequencyMhz;
+
+        var editableIndices = _voltageCurvePoints
+            .Select((point, index) => (point, index))
+            .Where(item => item.point.IsEditable)
+            .Select(item => item.index)
+            .ToArray();
+        var groupStart = Array.IndexOf(editableIndices, group[0]);
+        var groupEnd = Array.IndexOf(editableIndices, group[^1]);
+        if (groupStart < 0 || groupEnd < groupStart)
+            return handle.FrequencyMhz;
+
+        // Fade the offset across one group-width on either side. Points in the
+        // selected group retain the full requested movement; adjacent groups are
+        // adjusted only near their shared boundaries.
+        var transitionWidth = Math.Max(1, group.Count);
+        var weights = new Dictionary<int, double>();
+        for (var position = 0; position < editableIndices.Length; position++)
+        {
+            double weight;
+            if (position >= groupStart && position <= groupEnd)
+                weight = 1d;
+            else if (position < groupStart)
+                weight = Math.Max(0d, 1d - (groupStart - position) / (double)(transitionWidth + 1));
+            else
+                weight = Math.Max(0d, 1d - (position - groupEnd) / (double)(transitionWidth + 1));
+
+            if (weight > 0d)
+                weights[editableIndices[position]] = weight;
+        }
+
+        bool TryBuildCurve(int magnitude, out GPUVoltageCurvePoint[] candidate)
+        {
+            candidate = _voltageCurvePoints.ToArray();
+            var delta = Math.Sign(requestedDelta) * magnitude;
+            foreach (var (index, weight) in weights)
+            {
+                var point = candidate[index];
+                var frequency = point.FrequencyMhz + (int)Math.Round(delta * weight, MidpointRounding.AwayFromZero);
+                var minimum = point.StockFrequencyMhz + point.MinimumOffsetMhz;
+                var maximum = point.StockFrequencyMhz + point.MaximumOffsetMhz;
+                if (frequency < minimum || frequency > maximum)
+                    return false;
+
+                candidate[index] = point with
+                {
+                    FrequencyMhz = frequency,
+                    OffsetMhz = frequency - point.StockFrequencyMhz
+                };
+            }
+
+            // The controller requires a non-decreasing native driver table.
+            // Check the complete table, including non-editable driver points.
+            for (var i = 1; i < candidate.Length; i++)
+            {
+                if (candidate[i].FrequencyMhz < candidate[i - 1].FrequencyMhz)
+                    return false;
+            }
+
+            return true;
+        }
+
+        // Find the largest valid movement in the requested direction. If the
+        // incoming table is already invalid, leave it untouched rather than
+        // accidentally treating a failed zero-offset candidate as a valid edit.
+        if (!TryBuildCurve(0, out _))
+            return handle.FrequencyMhz;
+
+        // A real driver limit or immutable point can still limit movement, but
+        // editable hidden neighbors participate in the tapered transition.
+        var requestedMagnitude = Math.Abs(requestedDelta);
+        var low = 0;
+        var high = requestedMagnitude;
+        GPUVoltageCurvePoint[] bestCurve = _voltageCurvePoints.ToArray();
+        while (low <= high)
+        {
+            var middle = low + (high - low) / 2;
+            if (TryBuildCurve(middle, out var candidate))
+            {
+                bestCurve = candidate;
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        var appliedDelta = Math.Sign(requestedDelta) * high;
+        if (high > 0)
+        {
+            for (var i = 0; i < _voltageCurvePoints.Count; i++)
+                _voltageCurvePoints[i] = bestCurve[i];
+        }
+
+        return handle.FrequencyMhz + appliedDelta;
+    }
+
+    private void CurvePointValueEditor_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // Keep clicks in the numeric editor from bubbling to the graph's drag handler.
+        e.Handled = true;
+        if (sender is TextBox textBox)
+        {
+            textBox.Focus();
+            textBox.SelectAll();
+        }
+    }
+
+    private void CurvePointValueEditor_OnLostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+            CommitCurvePointValue(textBox);
+    }
+
+    private void CurvePointValueEditor_OnKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox textBox)
+            return;
+
+        if (e.Key == Key.Enter)
+        {
+            CommitCurvePointValue(textBox);
+            Keyboard.ClearFocus();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            DrawVoltageCurve();
+            Keyboard.ClearFocus();
+            e.Handled = true;
+        }
+    }
+
+    private void CommitCurvePointValue(TextBox editor)
+    {
+        if (_selectedCurvePoint < 0 || _selectedCurvePoint >= _voltageCurvePoints.Count)
+            return;
+
+        if (!int.TryParse(editor.Text.Trim(), NumberStyles.Integer, CultureInfo.CurrentCulture, out var frequency))
+        {
+            _curveStatus.Text = "Enter a valid frequency in MHz.";
+            DrawVoltageCurve();
+            return;
+        }
+
+        var requested = frequency;
+        frequency = ApplySelectedGroupFrequency(frequency);
+        _curveReset = false;
+        _curveStatus.Text = requested == frequency
+            ? $"Shifted the selected group to {frequency} MHz at its handle. Preview only; Apply to send all grouped driver points."
+            : $"Adjusted the requested {requested} MHz to {frequency} MHz to preserve driver limits and a monotonic transition across neighboring points.";
+        DrawVoltageCurve();
+    }
+
+    private (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency) GetCurveBounds()
+    {
+        if (_isDraggingCurvePoint && _dragCurveBounds.HasValue)
+            return _dragCurveBounds.Value;
+
+        var width = Math.Max(200, _voltageCurveCanvas.ActualWidth > 0 ? _voltageCurveCanvas.ActualWidth : _voltageCurveCanvas.Width);
+        var height = Math.Max(150, _voltageCurveCanvas.ActualHeight > 0 ? _voltageCurveCanvas.ActualHeight : _voltageCurveCanvas.Height);
+        var minVoltage = _voltageCurvePoints.Count == 0 ? 0 : _voltageCurvePoints.Min(p => p.VoltageMv);
+        var maxVoltage = _voltageCurvePoints.Count == 0 ? 1 : _voltageCurvePoints.Max(p => p.VoltageMv);
+        var minFrequency = _voltageCurvePoints.Count == 0 ? 0 : _voltageCurvePoints.Min(p =>
+            p.IsEditable ? Math.Min(p.FrequencyMhz, p.StockFrequencyMhz + p.MinimumOffsetMhz) : p.FrequencyMhz);
+        var maxFrequency = _voltageCurvePoints.Count == 0 ? 1 : _voltageCurvePoints.Max(p =>
+            p.IsEditable ? Math.Max(p.FrequencyMhz, p.StockFrequencyMhz + p.MaximumOffsetMhz) : p.FrequencyMhz);
+        if (maxVoltage <= minVoltage) maxVoltage = minVoltage + 1;
+        if (maxFrequency <= minFrequency) { minFrequency -= 25; maxFrequency += 25; }
+        var frequencyPadding = Math.Max(10, (maxFrequency - minFrequency) * 0.08);
+        return (48, 12, width - 62, height - 42, minVoltage, maxVoltage,
+            (int)Math.Floor(minFrequency - frequencyPadding), (int)Math.Ceiling(maxFrequency + frequencyPadding));
+    }
+
+    private static double MapVoltageToX(int voltage, (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency) b) =>
+        b.Left + (voltage - b.MinVoltage) / (double)(b.MaxVoltage - b.MinVoltage) * b.Width;
+
+    private static double MapFrequencyToY(int frequency, (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency) b) =>
+        b.Top + (b.MaxFrequency - frequency) / (double)(b.MaxFrequency - b.MinFrequency) * b.Height;
+
+    private static double MapYToFrequency(double y, (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency) b) =>
+        b.MaxFrequency - (y - b.Top) / b.Height * (b.MaxFrequency - b.MinFrequency);
+
+    private void DrawVoltageCurve()
+    {
+        if (_voltageCurveCanvas is null)
+            return;
+
+        _voltageCurveCanvas.Children.Clear();
+        if (_voltageCurvePoints.Count == 0)
+            return;
+
+        var bounds = GetCurveBounds();
+        var gridBrush = new SolidColorBrush(Color.FromArgb(55, 128, 128, 128));
+        for (var i = 0; i <= 4; i++)
+        {
+            var y = bounds.Top + bounds.Height * i / 4d;
+            AddChartLine(bounds.Left, y, bounds.Left + bounds.Width, y, gridBrush, 1);
+            var value = bounds.MaxFrequency - (bounds.MaxFrequency - bounds.MinFrequency) * i / 4d;
+            AddChartText($"{value:0}", 2, y - 8, 40);
+        }
+        for (var i = 0; i <= 4; i++)
+        {
+            var x = bounds.Left + bounds.Width * i / 4d;
+            AddChartLine(x, bounds.Top, x, bounds.Top + bounds.Height, gridBrush, 1);
+            var value = bounds.MinVoltage + (bounds.MaxVoltage - bounds.MinVoltage) * i / 4d;
+            AddChartText($"{value:0} mV", x - 22, bounds.Top + bounds.Height + 5, 54);
+        }
+
+        var stockCurve = new Polyline
+        {
+            Stroke = Brushes.Gray,
+            StrokeThickness = 1.5,
+            StrokeDashArray = new DoubleCollection { 4, 3 },
+            IsHitTestVisible = false
+        };
+        foreach (var point in _voltageCurvePoints)
+            stockCurve.Points.Add(new Point(MapVoltageToX(point.VoltageMv, bounds), MapFrequencyToY(point.StockFrequencyMhz, bounds)));
+        _voltageCurveCanvas.Children.Add(stockCurve);
+
+        var curve = new Polyline
+        {
+            Stroke = SystemColors.HighlightBrush,
+            StrokeThickness = 2,
+            IsHitTestVisible = false
+        };
+        foreach (var point in _voltageCurvePoints)
+            curve.Points.Add(new Point(MapVoltageToX(point.VoltageMv, bounds), MapFrequencyToY(point.FrequencyMhz, bounds)));
+        _voltageCurveCanvas.Children.Add(curve);
+
+        var handleIndices = GetEditablePointGroups().Select(GetGroupHandleIndex).ToHashSet();
+        for (var i = 0; i < _voltageCurvePoints.Count; i++)
+        {
+            var point = _voltageCurvePoints[i];
+            if (point.IsEditable && !handleIndices.Contains(i) && i != _selectedCurvePoint)
+                continue;
+
+            var selected = i == _selectedCurvePoint;
+            var marker = new Ellipse
+            {
+                Width = selected ? 11 : 8,
+                Height = selected ? 11 : 8,
+                Fill = point.IsEditable ? SystemColors.HighlightBrush : Brushes.Transparent,
+                Stroke = point.IsEditable ? SystemColors.HighlightBrush : Brushes.Gray,
+                StrokeThickness = selected ? 2.5 : 1.2,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(marker, MapVoltageToX(point.VoltageMv, bounds) - marker.Width / 2);
+            Canvas.SetTop(marker, MapFrequencyToY(point.FrequencyMhz, bounds) - marker.Height / 2);
+            _voltageCurveCanvas.Children.Add(marker);
+        }
+
+        if (_selectedCurvePoint >= 0 && _selectedCurvePoint < _voltageCurvePoints.Count &&
+            _voltageCurvePoints[_selectedCurvePoint].IsEditable)
+        {
+            var selected = _voltageCurvePoints[_selectedCurvePoint];
+            var editor = new TextBox
+            {
+                Text = selected.FrequencyMhz.ToString(CultureInfo.CurrentCulture),
+                Width = 68,
+                Height = 24,
+                Padding = new Thickness(3, 1, 3, 1),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                ToolTip = "Target frequency in MHz. Press Enter to commit.",
+                IsHitTestVisible = true
+            };
+            editor.PreviewMouseLeftButtonDown += CurvePointValueEditor_OnPreviewMouseLeftButtonDown;
+            editor.LostFocus += CurvePointValueEditor_OnLostFocus;
+            editor.KeyDown += CurvePointValueEditor_OnKeyDown;
+            var editorX = Math.Clamp(MapVoltageToX(selected.VoltageMv, bounds) - editor.Width / 2, 0, Math.Max(0, _voltageCurveCanvas.ActualWidth - editor.Width));
+            var editorY = Math.Max(0, MapFrequencyToY(selected.FrequencyMhz, bounds) - editor.Height - 9);
+            Canvas.SetLeft(editor, editorX);
+            Canvas.SetTop(editor, editorY);
+            _voltageCurveCanvas.Children.Add(editor);
+        }
+
+        UpdateCurvePointDetails();
+    }
+
+    private void AddChartLine(double x1, double y1, double x2, double y2, Brush brush, double thickness)
+    {
+        var line = new Line { X1 = x1, Y1 = y1, X2 = x2, Y2 = y2, Stroke = brush, StrokeThickness = thickness, IsHitTestVisible = false };
+        _voltageCurveCanvas.Children.Add(line);
+    }
+
+    private void AddChartText(string value, double x, double y, double width)
+    {
+        var text = new TextBlock
+        {
+            Text = value,
+            Width = width,
+            FontSize = 9,
+            Foreground = SystemColors.GrayTextBrush,
+            IsHitTestVisible = false
+        };
+        Canvas.SetLeft(text, x);
+        Canvas.SetTop(text, y);
+        _voltageCurveCanvas.Children.Add(text);
+    }
+
+    private void UpdateCurvePointDetails()
+    {
+        if (_selectedCurvePoint < 0 || _selectedCurvePoint >= _voltageCurvePoints.Count)
+        {
+            _curvePointDetails.Text = "Drag a solid point to edit its frequency. Hollow points are controlled by the GPU driver.";
+            return;
+        }
+
+        var point = _voltageCurvePoints[_selectedCurvePoint];
+        var group = GetSelectedEditablePointGroup();
+        var groupRange = group.Count == 0
+            ? string.Empty
+            : $"  •  Group: {group.Count} native points ({_voltageCurvePoints[group[0]].VoltageMv}–{_voltageCurvePoints[group[^1]].VoltageMv} mV)";
+        _curvePointDetails.Text = $"{point.VoltageMv} mV handle  •  {point.FrequencyMhz} MHz  •  {point.OffsetMhz:+#;-#;0} MHz offset" +
+            groupRange + (point.IsEditable ? string.Empty : "  •  Driver-controlled");
+    }
+
+    private void ResetVoltageCurveButton_Click(object sender, RoutedEventArgs e)
+    {
+        // Reset is a preview-only operation. The saved curve is not changed until Save
+        // or the user explicitly confirms Apply.
+        _curveReset = true;
+        var coreOffset = (int)_coreSlider.Value;
+        for (var i = 0; i < _voltageCurvePoints.Count; i++)
+        {
+            var point = _voltageCurvePoints[i];
+            _voltageCurvePoints[i] = point with
+            {
+                FrequencyMhz = point.StockFrequencyMhz + coreOffset,
+                OffsetMhz = coreOffset
+            };
+        }
+
+        _selectedCurvePoint = -1;
+        _dragCurveBounds = null;
+        _curveStatus.Text = "Reset preview: custom point offsets will be cleared on Save or confirmed Apply. Nothing has been changed on the GPU.";
+        DrawVoltageCurve();
+    }
 }

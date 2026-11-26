@@ -9,12 +9,13 @@
     xmlns:utils="clr-namespace:LenovoLegionToolkit.WPF.Utils"
     xmlns:wpfui="http://schemas.lepo.co/wpfui/2022/xaml"
     Title="{x:Static resources:Resource.OverclockDiscreteGPUSettingsWindow_Title}"
-    Width="650"
-    MinWidth="650"
-    MaxWidth="800"
-    SizeToContent="Height"
+    Width="1000"
+    Height="760"
+    MinWidth="760"
+    MinHeight="600"
+    MaxWidth="1800"
     FlowDirection="{x:Static utils:LocalizationHelper.Direction}"
-    ResizeMode="NoResize"
+    ResizeMode="CanResize"
     ShowInTaskbar="False"
     WindowStartupLocation="CenterOwner">
 
@@ -58,8 +59,8 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                <StackPanel Margin="0,0,4,0">
+            <ScrollViewer x:Name="_settingsScrollViewer" Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Width="{Binding ViewportWidth, ElementName=_settingsScrollViewer}" Margin="0,0,4,0">
                     <!-- Overclocking Section -->
                     <TextBlock Text="{x:Static resources:Resource.OverclockDiscreteGPUSettingsWindow_Overclocking}" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,8" />
                     
@@ -100,7 +101,8 @@
                                     Text="{x:Static resources:Resource.MHz}"
                                     IsHitTestVisible="False" />
                             </StackPanel>
-                        </StackPanel>
+                    </StackPanel>
+
                     </custom:CardControl>
 
                     <custom:CardControl Margin="0,0,0,24" Icon="Memory16">
@@ -225,6 +227,77 @@
                             </StackPanel>
                         </StackPanel>
                     </custom:CardControl>
+
+                    <!-- Editable NVIDIA voltage/frequency curve. Keep this section flat
+                         rather than wrapping it in CardControl, which adds a large filled panel. -->
+                    <TextBlock Text="Voltage / Frequency Curve" FontWeight="SemiBold" FontSize="14" Margin="0,16,0,8" />
+                    <StackPanel x:Name="_voltageCurveSection" HorizontalAlignment="Stretch" Margin="0,0,0,8">
+                        <TextBlock
+                            FontWeight="SemiBold"
+                            Margin="0,0,0,4"
+                            Text="GPU Voltage / Frequency Curve" />
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                            Text="Each handle controls adjacent driver points. Drag vertically to shift the whole group while preserving its shape; voltage is fixed by the GPU." />
+                            <TextBlock
+                                x:Name="_curveStatus"
+                                Margin="0,0,0,8"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="Reading curve from NVIDIA driver..." />
+                            <TextBlock
+                                x:Name="_curveTelemetry"
+                                Margin="0,0,0,8"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="Live GPU telemetry: waiting for NVIDIA GPU..." />
+                            <TextBlock
+                                Margin="0,0,0,6"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="Preview: dashed line is the stock curve; solid line is your proposed curve. Changes are not applied until you confirm." />
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8" VerticalAlignment="Center">
+                                <TextBlock VerticalAlignment="Center" Text="Curve handles:" />
+                                <Slider
+                                    x:Name="_curvePointCountSlider"
+                                    Width="180"
+                                    Margin="10,0,8,0"
+                                    Minimum="1"
+                                    Maximum="32"
+                                    Value="7"
+                                    TickFrequency="1"
+                                    IsSnapToTickEnabled="True"
+                                    ValueChanged="CurvePointCountSlider_OnValueChanged" />
+                                <TextBlock
+                                    x:Name="_curvePointCountValue"
+                                    MinWidth="72"
+                                    VerticalAlignment="Center"
+                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                    Text="32 points" />
+                            </StackPanel>
+                            <Canvas
+                                x:Name="_voltageCurveCanvas"
+                                MinHeight="260"
+                                Height="300"
+                                HorizontalAlignment="Stretch"
+                                Background="Transparent"
+                                ClipToBounds="True"
+                                Focusable="True"
+                                ToolTip="Select a point, then press Shift+Enter to flatten the editable curve to its right."
+                                PreviewKeyDown="VoltageCurveCanvas_OnPreviewKeyDown"
+                                MouseLeftButtonDown="VoltageCurveCanvas_OnMouseLeftButtonDown"
+                                MouseMove="VoltageCurveCanvas_OnMouseMove"
+                                MouseLeftButtonUp="VoltageCurveCanvas_OnMouseLeftButtonUp"
+                                SizeChanged="VoltageCurveCanvas_OnSizeChanged" />
+                            <TextBlock
+                                x:Name="_curvePointDetails"
+                                Margin="0,8,0,0"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="Select a point to inspect it." />
+                            <wpfui:Button
+                                HorizontalAlignment="Left"
+                                Margin="0,8,0,0"
+                                Click="ResetVoltageCurveButton_Click"
+                                Content="Reset custom curve" />
+                    </StackPanel>
                 </StackPanel>
             </ScrollViewer>
 
