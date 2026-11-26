@@ -35,8 +35,10 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
         var (enabled, info) = _gpuOverclockController.GetState();
 
-        _applyCloseGrid.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
-        _saveGrid.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
+        // Applying from this editor must be possible even when overclocking was
+        // previously disabled; ApplyStateWithRollbackAsync enables the saved state.
+        _applyCloseGrid.Visibility = Visibility.Visible;
+        _saveGrid.Visibility = Visibility.Collapsed;
         _contentGrid.IsEnabled = false;
 
         Loaded += async (_, _) =>
@@ -510,8 +512,9 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return;
 
         var point = _voltageCurvePoints[_selectedCurvePoint];
-        var bounds = GetCurveBounds();
-        var frequency = (int)Math.Round(MapYToFrequency(mouseY, bounds));
+        var bounds = _dragCurveBounds ?? GetCurveBounds();
+        var clampedY = Math.Clamp(mouseY, bounds.Top, bounds.Top + bounds.Height);
+        var frequency = (int)Math.Round(MapYToFrequency(clampedY, bounds));
         var minimum = point.StockFrequencyMhz + point.MinimumOffsetMhz;
         var maximum = point.StockFrequencyMhz + point.MaximumOffsetMhz;
 
@@ -531,6 +534,83 @@ public partial class OverclockDiscreteGPUSettingsWindow
         };
         _curveReset = false;
         UpdateCurvePointDetails();
+        DrawVoltageCurve();
+    }
+
+    private void CurvePointValueEditor_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // Keep clicks in the numeric editor from bubbling to the graph's drag handler.
+        e.Handled = true;
+        if (sender is TextBox textBox)
+        {
+            textBox.Focus();
+            textBox.SelectAll();
+        }
+    }
+
+    private void CurvePointValueEditor_OnLostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+            CommitCurvePointValue(textBox);
+    }
+
+    private void CurvePointValueEditor_OnKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox textBox)
+            return;
+
+        if (e.Key == Key.Enter)
+        {
+            CommitCurvePointValue(textBox);
+            Keyboard.ClearFocus();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            DrawVoltageCurve();
+            Keyboard.ClearFocus();
+            e.Handled = true;
+        }
+    }
+
+    private void CommitCurvePointValue(TextBox editor)
+    {
+        if (_selectedCurvePoint < 0 || _selectedCurvePoint >= _voltageCurvePoints.Count)
+            return;
+
+        var point = _voltageCurvePoints[_selectedCurvePoint];
+        if (!int.TryParse(editor.Text.Trim(), NumberStyles.Integer, CultureInfo.CurrentCulture, out var frequency))
+        {
+            _curveStatus.Text = "Enter a valid frequency in MHz.";
+            DrawVoltageCurve();
+            return;
+        }
+
+        var minimum = point.StockFrequencyMhz + point.MinimumOffsetMhz;
+        var maximum = point.StockFrequencyMhz + point.MaximumOffsetMhz;
+        if (_selectedCurvePoint > 0)
+            minimum = Math.Max(minimum, _voltageCurvePoints[_selectedCurvePoint - 1].FrequencyMhz);
+        if (_selectedCurvePoint < _voltageCurvePoints.Count - 1)
+            maximum = Math.Min(maximum, _voltageCurvePoints[_selectedCurvePoint + 1].FrequencyMhz);
+
+        if (minimum > maximum)
+        {
+            _curveStatus.Text = "This point has no valid frequency range between its neighbors.";
+            DrawVoltageCurve();
+            return;
+        }
+
+        var requested = frequency;
+        frequency = Math.Clamp(frequency, minimum, maximum);
+        _voltageCurvePoints[_selectedCurvePoint] = point with
+        {
+            FrequencyMhz = frequency,
+            OffsetMhz = frequency - point.StockFrequencyMhz
+        };
+        _curveReset = false;
+        _curveStatus.Text = requested == frequency
+            ? $"Set {point.VoltageMv} mV point to {frequency} MHz. Preview only; Apply to send it to the driver."
+            : $"Clamped requested {requested} MHz to {frequency} MHz to respect driver and neighboring-point limits.";
         DrawVoltageCurve();
     }
 
@@ -630,6 +710,31 @@ public partial class OverclockDiscreteGPUSettingsWindow
             Canvas.SetLeft(marker, MapVoltageToX(point.VoltageMv, bounds) - marker.Width / 2);
             Canvas.SetTop(marker, MapFrequencyToY(point.FrequencyMhz, bounds) - marker.Height / 2);
             _voltageCurveCanvas.Children.Add(marker);
+        }
+
+        if (_selectedCurvePoint >= 0 && _selectedCurvePoint < _voltageCurvePoints.Count &&
+            _voltageCurvePoints[_selectedCurvePoint].IsEditable && !_isDraggingCurvePoint)
+        {
+            var selected = _voltageCurvePoints[_selectedCurvePoint];
+            var editor = new TextBox
+            {
+                Text = selected.FrequencyMhz.ToString(CultureInfo.CurrentCulture),
+                Width = 68,
+                Height = 24,
+                Padding = new Thickness(3, 1, 3, 1),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                ToolTip = "Target frequency in MHz. Press Enter to commit.",
+                IsHitTestVisible = true
+            };
+            editor.PreviewMouseLeftButtonDown += CurvePointValueEditor_OnPreviewMouseLeftButtonDown;
+            editor.LostFocus += CurvePointValueEditor_OnLostFocus;
+            editor.KeyDown += CurvePointValueEditor_OnKeyDown;
+            var editorX = Math.Clamp(MapVoltageToX(selected.VoltageMv, bounds) - editor.Width / 2, 0, Math.Max(0, _voltageCurveCanvas.ActualWidth - editor.Width));
+            var editorY = Math.Max(0, MapFrequencyToY(selected.FrequencyMhz, bounds) - editor.Height - 9);
+            Canvas.SetLeft(editor, editorX);
+            Canvas.SetTop(editor, editorY);
+            _voltageCurveCanvas.Children.Add(editor);
         }
 
         UpdateCurvePointDetails();
