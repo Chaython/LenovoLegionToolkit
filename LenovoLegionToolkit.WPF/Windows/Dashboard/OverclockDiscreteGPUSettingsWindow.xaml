@@ -225,6 +225,49 @@
                             </StackPanel>
                         </StackPanel>
                     </custom:CardControl>
+
+                    <!-- Editable NVIDIA voltage/frequency curve -->
+                    <TextBlock Text="Voltage / Frequency Curve" FontWeight="SemiBold" FontSize="14" Margin="0,16,0,8" />
+                    <custom:CardControl Margin="0,0,0,8" Icon="ChartMultiple24">
+                        <custom:CardControl.Header>
+                            <controls:CardHeaderControl
+                                Title="GPU Voltage / Frequency Curve"
+                                Subtitle="Drag an editable point vertically to change its target frequency. Voltage is fixed by the GPU." />
+                        </custom:CardControl.Header>
+                        <StackPanel>
+                            <TextBlock
+                                x:Name="_curveStatus"
+                                Margin="0,0,0,8"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="Reading curve from NVIDIA driver..." />
+                            <Border
+                                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="4">
+                                <Canvas
+                                    x:Name="_voltageCurveCanvas"
+                                    Width="570"
+                                    Height="230"
+                                    Background="Transparent"
+                                    ClipToBounds="True"
+                                    MouseLeftButtonDown="VoltageCurveCanvas_OnMouseLeftButtonDown"
+                                    MouseMove="VoltageCurveCanvas_OnMouseMove"
+                                    MouseLeftButtonUp="VoltageCurveCanvas_OnMouseLeftButtonUp"
+                                    SizeChanged="VoltageCurveCanvas_OnSizeChanged" />
+                            </Border>
+                            <TextBlock
+                                x:Name="_curvePointDetails"
+                                Margin="0,8,0,0"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="Select a point to inspect it." />
+                            <wpfui:Button
+                                HorizontalAlignment="Left"
+                                Margin="0,8,0,0"
+                                Click="ResetVoltageCurveButton_Click"
+                                Content="Reset custom curve" />
+                        </StackPanel>
+                    </custom:CardControl>
                 </StackPanel>
             </ScrollViewer>
 
