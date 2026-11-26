@@ -254,10 +254,29 @@
                                 Margin="0,0,0,6"
                                 Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                 Text="Preview: dashed line is the stock curve; solid line is your proposed curve. Changes are not applied until you confirm." />
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8" VerticalAlignment="Center">
+                                <TextBlock VerticalAlignment="Center" Text="Editable handles:" />
+                                <Slider
+                                    x:Name="_curvePointCountSlider"
+                                    Width="180"
+                                    Margin="10,0,8,0"
+                                    Minimum="8"
+                                    Maximum="32"
+                                    Value="32"
+                                    TickFrequency="1"
+                                    IsSnapToTickEnabled="True"
+                                    ValueChanged="CurvePointCountSlider_OnValueChanged" />
+                                <TextBlock
+                                    x:Name="_curvePointCountValue"
+                                    MinWidth="72"
+                                    VerticalAlignment="Center"
+                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                    Text="32 points" />
+                            </StackPanel>
                             <Canvas
                                 x:Name="_voltageCurveCanvas"
-                                MinHeight="170"
-                                Height="190"
+                                MinHeight="260"
+                                Height="300"
                                 HorizontalAlignment="Stretch"
                                 Background="Transparent"
                                 ClipToBounds="True"
