@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Media;
+using System.Windows.Threading;
 using System.Windows.Shapes;
 using LenovoLegionToolkit.Lib.Settings;
 using LenovoLegionToolkit.Lib;
@@ -24,6 +25,8 @@ public partial class OverclockDiscreteGPUSettingsWindow
     private int _selectedCurvePoint = -1;
     private bool _isDraggingCurvePoint;
     private bool _curveReset;
+    private bool _telemetryRefreshInProgress;
+    private readonly DispatcherTimer _telemetryTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency)? _dragCurveBounds;
 
     public OverclockDiscreteGPUSettingsWindow()
@@ -36,7 +39,14 @@ public partial class OverclockDiscreteGPUSettingsWindow
         _saveGrid.Visibility = enabled ? Visibility.Collapsed : Visibility.Visible;
         _contentGrid.IsEnabled = false;
 
-        Loaded += async (_, _) => await PopulateAsync(info);
+        Loaded += async (_, _) =>
+        {
+            await PopulateAsync(info);
+            _telemetryTimer.Start();
+            await RefreshTelemetryAsync();
+        };
+        Closed += (_, _) => _telemetryTimer.Stop();
+        _telemetryTimer.Tick += async (_, _) => await RefreshTelemetryAsync();
     }
 
     private async Task PopulateAsync(GPUOverclockInfo info)
@@ -182,20 +192,19 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
     private async void ApplyButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!Save())
-            return;
-
-        ShowApplyResult(await ApplyAsync());
+        var applied = await ApplyAsync();
+        if (applied.HasValue)
+            ShowApplyResult(applied.Value);
     }
 
     private async void ApplyAndCloseButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!Save())
+        var applied = await ApplyAsync();
+        if (!applied.HasValue)
             return;
 
-        var applied = await ApplyAsync();
-        ShowApplyResult(applied);
-        if (applied)
+        ShowApplyResult(applied.Value);
+        if (applied.Value)
             Close();
     }
 
@@ -203,7 +212,6 @@ public partial class OverclockDiscreteGPUSettingsWindow
     {
         var message = applied ? Resource.Snackbar_SettingsApplied_Message : Resource.Snackbar_SettingsNotApplied_Message;
         var type = applied ? SnackbarType.Success : SnackbarType.Warning;
-
         SnackbarHelper.Show(Resource.OverclockDiscreteGPUSettingsWindow_Title, message, type);
     }
 
@@ -212,14 +220,26 @@ public partial class OverclockDiscreteGPUSettingsWindow
         if (!Save())
             return;
 
-        SnackbarHelper.Show(Resource.OverclockDiscreteGPUSettingsWindow_Title, Resource.Snackbar_SettingsApplied_Message, SnackbarType.Success);
+        MessageBox.Show(this,
+            "GPU overclock settings were saved for the next apply. No GPU changes have been applied.",
+            Resource.OverclockDiscreteGPUSettingsWindow_Title,
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
         Close();
+    }
+
+    private GPUOverclockInfo BuildOverclockInfo()
+    {
+        int voltageLock = _voltageLockSlider.Value <= _voltageLockSlider.Minimum ? 0 : (int)_voltageLockSlider.Value;
+        int voltageCap = _voltageCapSlider.Value <= _voltageCapSlider.Minimum ? 0 : (int)_voltageCapSlider.Value;
+        return new GPUOverclockInfo((int)_coreSlider.Value, (int)_memorySlider.Value, voltageLock, voltageCap);
     }
 
     private bool Save()
     {
-        if (!_curveReset && _voltageCurvePoints.Count > 0 &&
-            !_gpuOverclockController.SaveVoltageCurve(_voltageCurvePoints))
+        if (_curveReset)
+            _gpuOverclockController.ClearVoltageCurve();
+        else if (_voltageCurvePoints.Count > 0 && !_gpuOverclockController.SaveVoltageCurve(_voltageCurvePoints))
         {
             _curveStatus.Text = "Curve was not saved: check that points are monotonic and within the driver-supported range.";
             SnackbarHelper.Show(Resource.OverclockDiscreteGPUSettingsWindow_Title, Resource.Snackbar_SettingsNotApplied_Message, SnackbarType.Warning);
@@ -227,15 +247,66 @@ public partial class OverclockDiscreteGPUSettingsWindow
         }
 
         var (enabled, _) = _gpuOverclockController.GetState();
-        int voltageLock = _voltageLockSlider.Value <= _voltageLockSlider.Minimum ? 0 : (int)_voltageLockSlider.Value;
-        int voltageCap = _voltageCapSlider.Value <= _voltageCapSlider.Minimum ? 0 : (int)_voltageCapSlider.Value;
-        var info = new GPUOverclockInfo((int)_coreSlider.Value, (int)_memorySlider.Value, voltageLock, voltageCap);
-
-        _gpuOverclockController.SaveState(enabled, info);
+        _gpuOverclockController.SaveState(enabled, BuildOverclockInfo());
         return true;
     }
 
-    private async Task<bool> ApplyAsync() => await _gpuOverclockController.ApplyStateAsync();
+    private async Task<bool?> ApplyAsync()
+    {
+        var changedPoints = _voltageCurvePoints.Count(p => p.IsEditable && p.OffsetMhz != 0);
+        var confirmation = MessageBox.Show(this,
+            $"Apply the proposed GPU settings?\n\n" +
+            $"Core offset: {(int)_coreSlider.Value:+0;-0;0} MHz\n" +
+            $"Memory offset: {(int)_memorySlider.Value:+0;-0;0} MHz\n" +
+            $"Voltage cap: {(_voltageCapSlider.Value <= _voltageCapSlider.Minimum ? "Off" : ((int)_voltageCapSlider.Value).ToString())}\n" +
+            $"Voltage lock: {(_voltageLockSlider.Value <= _voltageLockSlider.Minimum ? "Off" : ((int)_voltageLockSlider.Value).ToString())}\n" +
+            $"Edited curve points: {changedPoints}\n\n" +
+            "This may cause instability. Keep the laptop connected to AC and monitor temperatures. " +
+            "If the driver rejects the change, the previous saved settings will be restored automatically.",
+            Resource.OverclockDiscreteGPUSettingsWindow_Title,
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (confirmation != MessageBoxResult.Yes)
+            return null;
+
+        var applied = await _gpuOverclockController.ApplyStateWithRollbackAsync(
+            BuildOverclockInfo(), _voltageCurvePoints, _curveReset);
+
+        _curveStatus.Text = applied
+            ? "Driver accepted the curve settings. This does not guarantee stability under load."
+            : "Apply failed or could not be verified. Previous saved settings were restored; confirm the GPU is back at stock/previous settings.";
+        if (applied)
+            _curveReset = false;
+
+        return applied;
+    }
+
+    private async Task RefreshTelemetryAsync()
+    {
+        if (_telemetryRefreshInProgress || _curveTelemetry is null)
+            return;
+
+        _telemetryRefreshInProgress = true;
+        try
+        {
+            var telemetry = await Task.Run(_gpuOverclockController.GetOverclockTelemetry);
+            if (telemetry is null)
+            {
+                _curveTelemetry.Text = "Live GPU telemetry unavailable (GPU asleep, driver unavailable, or sensor read failed).";
+                return;
+            }
+
+            var temperature = telemetry.TemperatureCelsius >= 0 ? $"{telemetry.TemperatureCelsius} °C" : "N/A";
+            _curveTelemetry.Text =
+                $"Live: {temperature}  •  {telemetry.UtilizationPercent}% load  •  " +
+                $"{telemetry.CoreClockMhz} MHz core  •  {telemetry.MemoryClockMhz} MHz memory  •  Voltage: not exposed by this NVAPI path";
+        }
+        finally
+        {
+            _telemetryRefreshInProgress = false;
+        }
+    }
 
     private void VoltageCurveCanvas_OnSizeChanged(object sender, SizeChangedEventArgs e) => DrawVoltageCurve();
 
@@ -388,6 +459,17 @@ public partial class OverclockDiscreteGPUSettingsWindow
             AddChartText($"{value:0} mV", x - 22, bounds.Top + bounds.Height + 5, 54);
         }
 
+        var stockCurve = new Polyline
+        {
+            Stroke = Brushes.Gray,
+            StrokeThickness = 1.5,
+            StrokeDashArray = new DoubleCollection { 4, 3 },
+            IsHitTestVisible = false
+        };
+        foreach (var point in _voltageCurvePoints)
+            stockCurve.Points.Add(new Point(MapVoltageToX(point.VoltageMv, bounds), MapFrequencyToY(point.StockFrequencyMhz, bounds)));
+        _voltageCurveCanvas.Children.Add(stockCurve);
+
         var curve = new Polyline
         {
             Stroke = SystemColors.HighlightBrush,
@@ -455,7 +537,8 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
     private void ResetVoltageCurveButton_Click(object sender, RoutedEventArgs e)
     {
-        _gpuOverclockController.ClearVoltageCurve();
+        // Reset is a preview-only operation. The saved curve is not changed until Save
+        // or the user explicitly confirms Apply.
         _curveReset = true;
         var coreOffset = (int)_coreSlider.Value;
         for (var i = 0; i < _voltageCurvePoints.Count; i++)
@@ -470,11 +553,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
         _selectedCurvePoint = -1;
         _dragCurveBounds = null;
-        _curveStatus.Text = "Custom curve cleared. The standard GPU curve and core offset will be restored when applied.";
+        _curveStatus.Text = "Reset preview: custom point offsets will be cleared on Save or confirmed Apply. Nothing has been changed on the GPU.";
         DrawVoltageCurve();
-        if (Save())
-            _ = ApplyAndReportAsync();
     }
-
-    private async Task ApplyAndReportAsync() => ShowApplyResult(await ApplyAsync());
 }
