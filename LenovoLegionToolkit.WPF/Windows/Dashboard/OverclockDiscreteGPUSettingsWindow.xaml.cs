@@ -80,7 +80,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
         UpdateValueTextBoxes();
 
-        var curve = await Task.Run(_gpuOverclockController.GetVoltageCurve);
+        var curve = await Task.Run(_gpuOverclockController.GetVoltageCurveProposal);
         _voltageCurvePoints.Clear();
         _voltageCurvePoints.AddRange(curve);
         _uncappedVoltageCurvePoints.Clear();
@@ -360,7 +360,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
         if (_curveReset)
             _gpuOverclockController.ClearVoltageCurve();
-        else if (_voltageCurvePoints.Count > 0 && !_gpuOverclockController.SaveVoltageCurve(_voltageCurvePoints))
+        else if (_uncappedVoltageCurvePoints.Count > 0 && !_gpuOverclockController.SaveVoltageCurve(_uncappedVoltageCurvePoints))
         {
             _curveStatus.Text = "Curve was not saved: check that points are monotonic and within the driver-supported range.";
             SnackbarHelper.Show(Resource.OverclockDiscreteGPUSettingsWindow_Title, Resource.Snackbar_SettingsNotApplied_Message, SnackbarType.Warning);
@@ -381,7 +381,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return null;
         }
 
-        var changedPoints = _voltageCurvePoints.Count(p => p.IsEditable && p.OffsetMhz != 0);
+        var changedPoints = _uncappedVoltageCurvePoints.Count(p => p.IsEditable && p.OffsetMhz != 0);
         var confirmation = MessageBox.Show(this,
             $"Apply the proposed GPU settings?\n\n" +
             $"Core offset: {(int)_coreSlider.Value:+0;-0;0} MHz\n" +
@@ -399,7 +399,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return null;
 
         var applied = await _gpuOverclockController.ApplyStateWithRollbackAsync(
-            BuildOverclockInfo(), _voltageCurvePoints, _curveReset);
+            BuildOverclockInfo(), _uncappedVoltageCurvePoints, _curveReset);
 
         _curveStatus.Text = applied
             ? "Driver accepted the curve settings. This does not guarantee stability under load."
