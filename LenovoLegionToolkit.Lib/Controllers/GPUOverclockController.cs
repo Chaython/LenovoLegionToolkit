@@ -331,8 +331,13 @@ public class GPUOverclockController
             if (first < 0 || last < first)
                 return [];
 
-            var minimumOffsetMhz = (int)Math.Ceiling(graphicsRange.Value.MinimumInkHz / 1000d);
-            var maximumOffsetMhz = (int)Math.Floor(graphicsRange.Value.MaximumInkHz / 1000d);
+            // The private clock-boost range describes the legacy curve-table
+            // envelope and can be much narrower than the editable P0 graphics
+            // delta range. Use the driver's P0 delta limits for point editing;
+            // SetClockBoostTable readback below remains the final authority.
+            var (coreDeltaRange, _) = GetClockDeltaRangesMhz();
+            var minimumOffsetMhz = coreDeltaRange.Min;
+            var maximumOffsetMhz = coreDeltaRange.Max;
             var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
 
             for (var i = first; i <= last; i++)
@@ -388,7 +393,8 @@ public class GPUOverclockController
 
             var (points, structVersion) = ReadCurvePoints(gpu);
             var deltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
-            var maxCoreDeltaMhz = GetClockDeltaRangesMhz().Core.Max;
+            var coreDeltaRange = GetClockDeltaRangesMhz().Core;
+            var maxCoreDeltaMhz = coreDeltaRange.Max;
             var multiplier = structVersion == AdjustedClockCurveStructVersion ||
                 graphicsRange.Value.MaximumInkHz != 2 * maxCoreDeltaMhz * 1000 ? 1 : 2;
             var requestedOffsetKhz = coreOffsetMhz * 1000 * multiplier;
@@ -401,8 +407,9 @@ public class GPUOverclockController
                 var stockKhz = GetStockFrequencyKhz(points, deltas, point.Index);
                 var targetKhz = stockKhz + requestedOffsetKhz;
                 var offsetKhz = targetKhz - stockKhz;
-                if (offsetKhz < graphicsRange.Value.MinimumInkHz || offsetKhz > graphicsRange.Value.MaximumInkHz)
-                    throw new InvalidOperationException($"Core offset exceeds the driver range at {point.VoltageMv} mV.");
+                if (offsetKhz < coreDeltaRange.Min * 1000 * multiplier ||
+                    offsetKhz > coreDeltaRange.Max * 1000 * multiplier)
+                    throw new InvalidOperationException($"Core offset exceeds the P0 graphics delta range at {point.VoltageMv} mV.");
 
                 var stockMhz = stockKhz / 1000;
                 var targetMhz = targetKhz / 1000;
@@ -774,8 +781,11 @@ public class GPUOverclockController
 
             var deltas = currentDeltas.ToArray();
             var expectedCurve = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(lastIndex - firstIndex + 1);
-            var minimumOffsetMhz = (int)Math.Ceiling(graphicsRange.MinimumInkHz / 1000d);
-            var maximumOffsetMhz = (int)Math.Floor(graphicsRange.MaximumInkHz / 1000d);
+            // Match the editable-point bounds exposed by GetVoltageCurve().
+            // The boost-range endpoint is not the per-point P0 delta limit.
+            var (coreDeltaRange, _) = GetClockDeltaRangesMhz();
+            var minimumOffsetMhz = coreDeltaRange.Min;
+            var maximumOffsetMhz = coreDeltaRange.Max;
 
             // Construct one effective native curve for every path (custom curve,
             // global offset, voltage cap, or voltage lock). The editor uses this
@@ -809,9 +819,9 @@ public class GPUOverclockController
                         offsetKhz = coreOffsetKhz;
                     }
 
-                    if (offsetKhz < graphicsRange.MinimumInkHz || offsetKhz > graphicsRange.MaximumInkHz)
+                    if (offsetKhz < minimumOffsetMhz * 1000 || offsetKhz > maximumOffsetMhz * 1000)
                     {
-                        Log.Instance.Trace($"Requested V/F offset is outside the current driver range. [index={i}, offset={offsetKhz}]");
+                        Log.Instance.Trace($"Requested V/F offset is outside the P0 graphics delta range. [index={i}, offset={offsetKhz}, min={minimumOffsetMhz * 1000}, max={maximumOffsetMhz * 1000}]");
                         return false;
                     }
 
@@ -863,9 +873,9 @@ public class GPUOverclockController
                 var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, point.Index);
                 var targetFrequencyKhz = point.FrequencyMhz * 1000;
                 var offsetKhz = targetFrequencyKhz - stockFrequencyKhz;
-                if (offsetKhz < graphicsRange.MinimumInkHz || offsetKhz > graphicsRange.MaximumInkHz)
+                if (offsetKhz < minimumOffsetMhz * 1000 || offsetKhz > maximumOffsetMhz * 1000)
                 {
-                    Log.Instance.Trace($"Effective V/F curve exceeds the driver range. [index={point.Index}, offset={offsetKhz}]");
+                    Log.Instance.Trace($"Effective V/F curve exceeds the P0 graphics delta range. [index={point.Index}, offset={offsetKhz}, min={minimumOffsetMhz * 1000}, max={maximumOffsetMhz * 1000}]");
                     return false;
                 }
 
