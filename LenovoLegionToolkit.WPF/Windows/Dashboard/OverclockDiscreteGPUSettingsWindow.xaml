@@ -102,6 +102,8 @@
                             </StackPanel>
                     </StackPanel>
 
+                    </custom:CardControl>
+
                     <custom:CardControl Margin="0,0,0,24" Icon="Memory16">
                         <custom:CardControl.Header>
                             <controls:CardHeaderControl
@@ -272,8 +274,7 @@
                                 Margin="0,8,0,0"
                                 Click="ResetVoltageCurveButton_Click"
                                 Content="Reset custom curve" />
-                        </StackPanel>
-                    </custom:CardControl>
+                    </StackPanel>
                 </StackPanel>
             </ScrollViewer>
 
