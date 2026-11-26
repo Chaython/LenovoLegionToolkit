@@ -365,6 +365,62 @@ public class GPUOverclockController
     }
 
     /// <summary>
+    /// Builds the reset-to-global-offset preview using the same NVAPI unit
+    /// conversion as the driver apply path. This prevents older curve-table
+    /// versions from showing a different reset curve than they receive.
+    /// </summary>
+    public GPUVoltageCurvePoint[] GetVoltageCurveWithCoreOffset(int coreOffsetMhz)
+    {
+        var curve = GetVoltageCurve();
+        if (curve.Length == 0 || coreOffsetMhz == 0)
+            return curve;
+
+        try
+        {
+            NVAPI.Initialize();
+            var gpu = NVAPI.GetGPU();
+            if (gpu is null)
+                return [];
+
+            var (graphicsRange, _) = GetCurveRanges(gpu);
+            if (graphicsRange is null)
+                return [];
+
+            var (points, structVersion) = ReadCurvePoints(gpu);
+            var deltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
+            var maxCoreDeltaMhz = GetClockDeltaRangesMhz().Core.Max;
+            var multiplier = structVersion == AdjustedClockCurveStructVersion ||
+                graphicsRange.Value.MaximumInkHz != 2 * maxCoreDeltaMhz * 1000 ? 1 : 2;
+            var requestedOffsetKhz = coreOffsetMhz * 1000 * multiplier;
+
+            return curve.Select(point =>
+            {
+                if (!point.IsEditable || point.Index >= points.Length || point.Index >= deltas.Length)
+                    return point;
+
+                var stockKhz = GetStockFrequencyKhz(points, deltas, point.Index);
+                var targetKhz = stockKhz + requestedOffsetKhz;
+                var offsetKhz = targetKhz - stockKhz;
+                if (offsetKhz < graphicsRange.Value.MinimumInkHz || offsetKhz > graphicsRange.Value.MaximumInkHz)
+                    throw new InvalidOperationException($"Core offset exceeds the driver range at {point.VoltageMv} mV.");
+
+                var stockMhz = stockKhz / 1000;
+                var targetMhz = targetKhz / 1000;
+                return point with
+                {
+                    FrequencyMhz = targetMhz,
+                    OffsetMhz = targetMhz - stockMhz
+                };
+            }).ToArray();
+        }
+        catch (Exception ex)
+        {
+            Log.Instance.Trace($"Failed to build the reset V/F curve preview.", ex);
+            return [];
+        }
+    }
+
+    /// <summary>
     /// Applies the voltage cap to a proposed curve. The first point at or above
     /// the requested voltage is the anchor; every editable point to its right is
     /// set to the anchor frequency. Driver-controlled points are never modified.
