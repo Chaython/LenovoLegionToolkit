@@ -524,9 +524,9 @@ public partial class OverclockDiscreteGPUSettingsWindow
         DrawVoltageCurve();
     }
 
-    // Move every native point in the selected group by one common delta. This
-    // preserves the local curve shape. The delta is bounded by each point's driver
-    // limits and by the unchanged points immediately outside the group.
+    // Move the selected group at full strength and taper the same movement into
+    // the neighboring editable points. This prevents hidden points at a group
+    // boundary from behaving like fixed walls while keeping a smooth curve.
     private int ApplySelectedGroupFrequency(int requestedHandleFrequency)
     {
         var group = GetSelectedEditablePointGroup();
@@ -536,41 +536,99 @@ public partial class OverclockDiscreteGPUSettingsWindow
         var handleIndex = GetGroupHandleIndex(group);
         var handle = _voltageCurvePoints[handleIndex];
         var requestedDelta = requestedHandleFrequency - handle.FrequencyMhz;
-        var minimumDelta = int.MinValue;
-        var maximumDelta = int.MaxValue;
-
-        foreach (var index in group)
-        {
-            var point = _voltageCurvePoints[index];
-            minimumDelta = Math.Max(minimumDelta, point.StockFrequencyMhz + point.MinimumOffsetMhz - point.FrequencyMhz);
-            maximumDelta = Math.Min(maximumDelta, point.StockFrequencyMhz + point.MaximumOffsetMhz - point.FrequencyMhz);
-        }
-
-        var groupSet = group.ToHashSet();
-        foreach (var index in group)
-        {
-            if (index > 0 && !groupSet.Contains(index - 1))
-                minimumDelta = Math.Max(minimumDelta, _voltageCurvePoints[index - 1].FrequencyMhz - _voltageCurvePoints[index].FrequencyMhz);
-            if (index < _voltageCurvePoints.Count - 1 && !groupSet.Contains(index + 1))
-                maximumDelta = Math.Min(maximumDelta, _voltageCurvePoints[index + 1].FrequencyMhz - _voltageCurvePoints[index].FrequencyMhz);
-        }
-
-        if (minimumDelta > maximumDelta)
+        if (requestedDelta == 0)
             return handle.FrequencyMhz;
 
-        var delta = Math.Clamp(requestedDelta, minimumDelta, maximumDelta);
-        foreach (var index in group)
+        var editableIndices = _voltageCurvePoints
+            .Select((point, index) => (point, index))
+            .Where(item => item.point.IsEditable)
+            .Select(item => item.index)
+            .ToArray();
+        var groupStart = Array.IndexOf(editableIndices, group[0]);
+        var groupEnd = Array.IndexOf(editableIndices, group[^1]);
+        if (groupStart < 0 || groupEnd < groupStart)
+            return handle.FrequencyMhz;
+
+        // Fade the offset across one group-width on either side. Points in the
+        // selected group retain the full requested movement; adjacent groups are
+        // adjusted only near their shared boundaries.
+        var transitionWidth = Math.Max(1, group.Count);
+        var weights = new Dictionary<int, double>();
+        for (var position = 0; position < editableIndices.Length; position++)
         {
-            var point = _voltageCurvePoints[index];
-            var frequency = point.FrequencyMhz + delta;
-            _voltageCurvePoints[index] = point with
-            {
-                FrequencyMhz = frequency,
-                OffsetMhz = frequency - point.StockFrequencyMhz
-            };
+            double weight;
+            if (position >= groupStart && position <= groupEnd)
+                weight = 1d;
+            else if (position < groupStart)
+                weight = Math.Max(0d, 1d - (groupStart - position) / (double)(transitionWidth + 1));
+            else
+                weight = Math.Max(0d, 1d - (position - groupEnd) / (double)(transitionWidth + 1));
+
+            if (weight > 0d)
+                weights[editableIndices[position]] = weight;
         }
 
-        return handle.FrequencyMhz + delta;
+        bool TryBuildCurve(int magnitude, out GPUVoltageCurvePoint[] candidate)
+        {
+            candidate = _voltageCurvePoints.ToArray();
+            var delta = Math.Sign(requestedDelta) * magnitude;
+            foreach (var (index, weight) in weights)
+            {
+                var point = candidate[index];
+                var frequency = point.FrequencyMhz + (int)Math.Round(delta * weight, MidpointRounding.AwayFromZero);
+                var minimum = point.StockFrequencyMhz + point.MinimumOffsetMhz;
+                var maximum = point.StockFrequencyMhz + point.MaximumOffsetMhz;
+                if (frequency < minimum || frequency > maximum)
+                    return false;
+
+                candidate[index] = point with
+                {
+                    FrequencyMhz = frequency,
+                    OffsetMhz = frequency - point.StockFrequencyMhz
+                };
+            }
+
+            // The controller requires a non-decreasing native driver table.
+            // Check the complete table, including non-editable driver points.
+            for (var i = 1; i < candidate.Length; i++)
+            {
+                if (candidate[i].FrequencyMhz < candidate[i - 1].FrequencyMhz)
+                    return false;
+            }
+
+            return true;
+        }
+
+        // Find the largest valid movement in the requested direction. The curve
+        // starts valid, so zero is always the safe lower bound. This only limits
+        // movement when a real driver limit or immutable point makes a valid
+        // monotonic transition impossible; editable hidden neighbors move with it.
+        var requestedMagnitude = Math.Abs(requestedDelta);
+        var low = 0;
+        var high = requestedMagnitude;
+        GPUVoltageCurvePoint[] bestCurve = _voltageCurvePoints.ToArray();
+        while (low <= high)
+        {
+            var middle = low + (high - low) / 2;
+            if (TryBuildCurve(middle, out var candidate))
+            {
+                bestCurve = candidate;
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        var appliedDelta = Math.Sign(requestedDelta) * high;
+        if (high > 0)
+        {
+            for (var i = 0; i < _voltageCurvePoints.Count; i++)
+                _voltageCurvePoints[i] = bestCurve[i];
+        }
+
+        return handle.FrequencyMhz + appliedDelta;
     }
 
     private void CurvePointValueEditor_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
