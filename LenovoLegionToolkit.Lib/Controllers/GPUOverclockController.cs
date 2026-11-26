@@ -1022,7 +1022,7 @@ public class GPUOverclockController
         int structVersion,
         (int Min, int Max) p0RangeKhz)
     {
-        var first = Math.Max(0, graphicsRange.FirstPointIndex);
+        var first = Math.Max(0, (int)graphicsRange.FirstPointIndex);
         var last = Math.Min(graphicsRange.LastPointIndex, Math.Min(points.Length, deltas.Length) - 1);
         if (last < first)
             return;
@@ -1042,11 +1042,7 @@ public class GPUOverclockController
 
         var rawP0MinKhz = p0RangeKhz.Min;
         var rawP0MaxKhz = p0RangeKhz.Max;
-        Log.Instance.Trace(
-            $"NVAPI V/F limits [gpu={NVAPI.GetGPUId(gpu)}, struct={structVersion}, points={first}..{last}, editable={editableCount}, " +
-            $"P0DeltaKhz={rawP0MinKhz}..{rawP0MaxKhz}, P0DeltaMhz={rawP0MinKhz / 1000}..{rawP0MaxKhz / 1000}, " +
-            $"BoostAbsoluteKhz={graphicsRange.MinimumInkHz}..{graphicsRange.MaximumInkHz}, " +
-            $"CurrentEditableTableDeltaKhz={(editableCount > 0 ? $"{minTableDeltaKhz}..{maxTableDeltaKhz}" : "none")}]");
+        Log.Instance.Trace($"NVAPI V/F limits [gpu={NVAPI.GetGPUId(gpu)}, struct={structVersion}, points={first}..{last}, editable={editableCount}, P0DeltaKhz={rawP0MinKhz}..{rawP0MaxKhz}, P0DeltaMhz={rawP0MinKhz / 1000}..{rawP0MaxKhz / 1000}, BoostAbsoluteKhz={graphicsRange.MinimumInkHz}..{graphicsRange.MaximumInkHz}, CurrentEditableTableDeltaKhz={(editableCount > 0 ? $"{minTableDeltaKhz}..{maxTableDeltaKhz}" : "none")}]");
     }
 
     private const int DefaultCurveStructVersion = 1;
