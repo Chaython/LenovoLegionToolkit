@@ -326,18 +326,20 @@ public class GPUOverclockController
 
             var (points, structVersion) = ReadCurvePoints(gpu);
             var deltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
+            var coreDeltaRange = GetClockDeltaRangesMhz().Core;
+            var maxCoreDeltaKhz = coreDeltaRange.Max * 1000;
+            var curveDeltaMultiplier = structVersion == AdjustedClockCurveStructVersion ||
+                graphicsRange.Value.MaximumInkHz != 2 * maxCoreDeltaKhz ? 1 : 2;
             var first = graphicsRange.Value.FirstPointIndex;
             var last = Math.Min(graphicsRange.Value.LastPointIndex, Math.Min(points.Length, deltas.Length) - 1);
             if (first < 0 || last < first)
                 return [];
 
-            // The private clock-boost range describes the legacy curve-table
-            // envelope and can be much narrower than the editable P0 graphics
-            // delta range. Use the driver's P0 delta limits for point editing;
-            // SetClockBoostTable readback below remains the final authority.
-            var (coreDeltaRange, _) = GetClockDeltaRangesMhz();
-            var minimumOffsetMhz = coreDeltaRange.Min;
-            var maximumOffsetMhz = coreDeltaRange.Max;
+            // Convert the public P0 delta envelope into the native V/F table
+            // units for this driver structure version. The private range itself
+            // can be an artificially narrow legacy envelope on laptop GPUs.
+            var minimumOffsetMhz = coreDeltaRange.Min * curveDeltaMultiplier;
+            var maximumOffsetMhz = coreDeltaRange.Max * curveDeltaMultiplier;
             var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
 
             for (var i = first; i <= last; i++)
@@ -781,11 +783,10 @@ public class GPUOverclockController
 
             var deltas = currentDeltas.ToArray();
             var expectedCurve = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(lastIndex - firstIndex + 1);
-            // Match the editable-point bounds exposed by GetVoltageCurve().
-            // The boost-range endpoint is not the per-point P0 delta limit.
+            // Match the native V/F table units used by GetVoltageCurve().
             var (coreDeltaRange, _) = GetClockDeltaRangesMhz();
-            var minimumOffsetMhz = coreDeltaRange.Min;
-            var maximumOffsetMhz = coreDeltaRange.Max;
+            var minimumOffsetMhz = coreDeltaRange.Min * clockMultiplier;
+            var maximumOffsetMhz = coreDeltaRange.Max * clockMultiplier;
 
             // Construct one effective native curve for every path (custom curve,
             // global offset, voltage cap, or voltage lock). The editor uses this
