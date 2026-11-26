@@ -323,11 +323,65 @@ public partial class OverclockDiscreteGPUSettingsWindow
             return;
 
         _selectedCurvePoint = nearest;
+        _voltageCurveCanvas.Focus();
         _dragCurveBounds = GetCurveBounds();
         _isDraggingCurvePoint = true;
         _voltageCurveCanvas.CaptureMouse();
         UpdateSelectedCurvePoint(position.Y);
         e.Handled = true;
+    }
+
+    private void VoltageCurveCanvas_OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || Keyboard.Modifiers != ModifierKeys.Shift)
+            return;
+
+        e.Handled = true;
+        FlattenCurveFromSelectedPoint();
+    }
+
+    private void FlattenCurveFromSelectedPoint()
+    {
+        if (_selectedCurvePoint < 0 || _selectedCurvePoint >= _voltageCurvePoints.Count)
+        {
+            _curveStatus.Text = "Select a curve point first, then press Shift+Enter to flatten the curve to its right.";
+            return;
+        }
+
+        var tail = _voltageCurvePoints.Skip(_selectedCurvePoint).ToList();
+        if (tail.Any(point => !point.IsEditable))
+        {
+            _curveStatus.Text = "Cannot flatten the entire right-hand tail: it contains driver-controlled points that cannot be edited.";
+            return;
+        }
+
+        var minimum = tail.Max(point => point.StockFrequencyMhz + point.MinimumOffsetMhz);
+        var maximum = tail.Min(point => point.StockFrequencyMhz + point.MaximumOffsetMhz);
+        if (_selectedCurvePoint > 0)
+            minimum = Math.Max(minimum, _voltageCurvePoints[_selectedCurvePoint - 1].FrequencyMhz);
+
+        if (minimum > maximum)
+        {
+            _curveStatus.Text = "Cannot create a flat tail: the selected points do not share a common driver-supported frequency.";
+            return;
+        }
+
+        var targetFrequency = Math.Clamp(_voltageCurvePoints[_selectedCurvePoint].FrequencyMhz, minimum, maximum);
+        for (var i = _selectedCurvePoint; i < _voltageCurvePoints.Count; i++)
+        {
+            var point = _voltageCurvePoints[i];
+            _voltageCurvePoints[i] = point with
+            {
+                FrequencyMhz = targetFrequency,
+                OffsetMhz = targetFrequency - point.StockFrequencyMhz
+            };
+        }
+
+        _curveReset = false;
+        _curveStatus.Text = $"Flattened {_voltageCurvePoints.Count - _selectedCurvePoint} curve points from " +
+            $"{_voltageCurvePoints[_selectedCurvePoint].VoltageMv} mV at {targetFrequency} MHz. Preview only; Apply to send it to the driver.";
+        UpdateCurvePointDetails();
+        DrawVoltageCurve();
     }
 
     private void VoltageCurveCanvas_OnMouseMove(object sender, MouseEventArgs e)
