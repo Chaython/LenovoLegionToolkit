@@ -81,6 +81,73 @@ public class GPUOverclockController
 
     public (bool, GPUOverclockInfo) GetState() => (_settings.Store.Enabled, _settings.Store.Info);
 
+    /// <summary>
+    /// Reads best-effort live telemetry using the same NVAPI properties already used
+    /// by the hardware sensor controller. Missing or sleeping GPUs return null.
+    /// </summary>
+    public GPUOverclockTelemetry? GetOverclockTelemetry()
+    {
+        try
+        {
+            NVAPI.Initialize();
+            var gpu = NVAPI.GetGPU();
+            if (gpu is null)
+                return null;
+
+            var utilization = Math.Clamp(Math.Max(gpu.UsageInformation.GPU.Percentage, gpu.UsageInformation.VideoEngine.Percentage), 0, 100);
+            var coreClock = (int)gpu.CurrentClockFrequencies.GraphicsClock.Frequency / 1000;
+            var memoryClock = (int)gpu.CurrentClockFrequencies.MemoryClock.Frequency / 1000;
+            var temperature = gpu.ThermalInformation.ThermalSensors.FirstOrDefault()?.CurrentTemperature ?? -1;
+
+            return new GPUOverclockTelemetry(utilization, coreClock, memoryClock, temperature);
+        }
+        catch (Exception ex)
+        {
+            Log.Instance.Trace("Failed to read GPU overclock telemetry.", ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Applies a proposed settings/curve change transactionally. If the driver rejects
+    /// the change or readback verification fails, the previous persisted settings are
+    /// restored and reapplied as a best-effort rollback.
+    /// </summary>
+    public async Task<bool> ApplyStateWithRollbackAsync(
+        GPUOverclockInfo info,
+        System.Collections.Generic.IReadOnlyList<GPUVoltageCurvePoint> editedPoints,
+        bool resetCurve)
+    {
+        var previousEnabled = _settings.Store.Enabled;
+        var previousInfo = _settings.Store.Info;
+        var previousCurve = _settings.Store.VoltageCurve
+            .Select(p => new GPUVoltageCurveOffset { Index = p.Index, VoltageMv = p.VoltageMv, OffsetMhz = p.OffsetMhz })
+            .ToList();
+        var previousGpuId = _settings.Store.VoltageCurveGpuId;
+
+        var curveSaved = resetCurve || editedPoints.Count == 0 || SaveVoltageCurve(editedPoints);
+        if (!curveSaved)
+            return false;
+
+        SaveState(true, info);
+        var applied = await ApplyStateAsync().ConfigureAwait(false);
+        if (applied)
+            return true;
+
+        _settings.Store.Enabled = previousEnabled;
+        _settings.Store.Info = previousInfo;
+        _settings.Store.VoltageCurve = previousCurve;
+        _settings.Store.VoltageCurveGpuId = previousGpuId;
+        _settings.SynchronizeStore();
+
+        var rollbackApplied = previousEnabled
+            ? await ApplyStateAsync().ConfigureAwait(false)
+            : await ApplyStateAsync(force: true).ConfigureAwait(false);
+
+        Log.Instance.Trace($"GPU overclock transaction failed; previous settings restored. [rollbackApplied={rollbackApplied}]");
+        return false;
+    }
+
     public void SaveState(bool enabled, GPUOverclockInfo info)
     {
         Log.Instance.Trace($"Saved GPU overclock settings: [enabled={enabled}, info={info}].");
