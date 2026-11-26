@@ -26,6 +26,7 @@ public partial class OverclockDiscreteGPUSettingsWindow
     private int _selectedCurvePoint = -1;
     private bool _isDraggingCurvePoint;
     private bool _curveReset;
+    private bool _voltageCapPreviewValid = true;
     private bool _telemetryRefreshInProgress;
     private readonly DispatcherTimer _telemetryTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private (double Left, double Top, double Width, double Height, int MinVoltage, int MaxVoltage, int MinFrequency, int MaxFrequency)? _dragCurveBounds;
@@ -207,20 +208,23 @@ public partial class OverclockDiscreteGPUSettingsWindow
         var voltageLimit = GetActiveVoltageLimitMv();
         if (voltageLimit <= 0)
         {
+            _voltageCapPreviewValid = true;
             _voltageCurvePoints.Clear();
             _voltageCurvePoints.AddRange(_uncappedVoltageCurvePoints);
             return;
         }
 
-        if (!_gpuOverclockController.TryApplyVoltageLimitToCurve(
+        if (!GPUOverclockController.TryApplyVoltageLimitToCurve(
             _uncappedVoltageCurvePoints, voltageLimit, out var effectiveCurve, out var error))
         {
+            _voltageCapPreviewValid = false;
             _curveStatus.Text = error + " The cap cannot be represented without changing driver-controlled points or exceeding a driver limit.";
             _voltageCurvePoints.Clear();
             _voltageCurvePoints.AddRange(_uncappedVoltageCurvePoints);
             return;
         }
 
+        _voltageCapPreviewValid = true;
         _voltageCurvePoints.Clear();
         _voltageCurvePoints.AddRange(effectiveCurve);
         _curveStatus.Text = $"Preview includes a {voltageLimit} mV voltage limit. The curve shown is the curve that will be saved and sent to the driver.";
@@ -310,6 +314,12 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
     private bool Save()
     {
+        if (!_voltageCapPreviewValid)
+        {
+            SnackbarHelper.Show(Resource.OverclockDiscreteGPUSettingsWindow_Title, Resource.Snackbar_SettingsNotApplied_Message, SnackbarType.Warning);
+            return false;
+        }
+
         if (_curveReset)
             _gpuOverclockController.ClearVoltageCurve();
         else if (_voltageCurvePoints.Count > 0 && !_gpuOverclockController.SaveVoltageCurve(_voltageCurvePoints))
@@ -326,6 +336,13 @@ public partial class OverclockDiscreteGPUSettingsWindow
 
     private async Task<bool?> ApplyAsync()
     {
+        if (!_voltageCapPreviewValid)
+        {
+            MessageBox.Show(this, _curveStatus.Text, Resource.OverclockDiscreteGPUSettingsWindow_Title,
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return null;
+        }
+
         var changedPoints = _voltageCurvePoints.Count(p => p.IsEditable && p.OffsetMhz != 0);
         var confirmation = MessageBox.Show(this,
             $"Apply the proposed GPU settings?\n\n" +
