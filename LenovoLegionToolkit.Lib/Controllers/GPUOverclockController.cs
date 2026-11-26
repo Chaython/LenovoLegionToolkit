@@ -365,6 +365,70 @@ public class GPUOverclockController
     }
 
     /// <summary>
+    /// Applies the voltage cap to a proposed curve. The first point at or above
+    /// the requested voltage is the anchor; every editable point to its right is
+    /// set to the anchor frequency. Driver-controlled points are never modified.
+    /// This is shared by the editor preview and driver-table construction.
+    /// </summary>
+    public static bool TryApplyVoltageLimitToCurve(
+        global::System.Collections.Generic.IReadOnlyList<GPUVoltageCurvePoint> source,
+        int voltageMv,
+        out GPUVoltageCurvePoint[] effectiveCurve,
+        out string error)
+    {
+        effectiveCurve = source?.ToArray() ?? [];
+        error = string.Empty;
+        if (voltageMv <= 0 || effectiveCurve.Length == 0)
+            return true;
+
+        var anchorPosition = Array.FindIndex(effectiveCurve, p => p.VoltageMv >= voltageMv);
+        if (anchorPosition < 0)
+        {
+            error = $"No V/F point exists at or above {voltageMv} mV.";
+            return false;
+        }
+
+        var anchorFrequency = effectiveCurve[anchorPosition].FrequencyMhz;
+        for (var i = anchorPosition + 1; i < effectiveCurve.Length; i++)
+        {
+            var point = effectiveCurve[i];
+            if (!point.IsEditable)
+            {
+                if (point.FrequencyMhz > anchorFrequency)
+                {
+                    error = $"Voltage cap cannot be represented because driver-controlled point #{point.Index} is above the cap anchor.";
+                    return false;
+                }
+                continue;
+            }
+
+            var offset = anchorFrequency - point.StockFrequencyMhz;
+            if (offset < point.MinimumOffsetMhz || offset > point.MaximumOffsetMhz)
+            {
+                error = $"Voltage cap cannot be represented within the driver's range at {point.VoltageMv} mV.";
+                return false;
+            }
+
+            effectiveCurve[i] = point with
+            {
+                FrequencyMhz = anchorFrequency,
+                OffsetMhz = offset
+            };
+        }
+
+        for (var i = 1; i < effectiveCurve.Length; i++)
+        {
+            if (effectiveCurve[i].FrequencyMhz < effectiveCurve[i - 1].FrequencyMhz)
+            {
+                error = $"Voltage cap would create a descending curve at {effectiveCurve[i].VoltageMv} mV.";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Validates and persists a complete edited curve. Only driver-editable points
     /// are stored; fixed points remain controlled by the GPU firmware/driver.
     /// </summary>
@@ -714,24 +778,47 @@ public class GPUOverclockController
                     deltas[index] = new PrivateClockBoostTableV1.GPUDelta(offsetKhz);
                 }
 
-                // A custom point must never undo an explicitly requested voltage cap.
+                // Build the same effective curve the editor previews, then write
+                // those exact point offsets to the driver table.
                 if (anchorIndex >= 0)
                 {
-                    for (var i = anchorIndex + 1; i <= lastIndex; i++)
+                    var minimumOffsetMhz = (int)Math.Ceiling(graphicsRange.MinimumInkHz / 1000d);
+                    var maximumOffsetMhz = (int)Math.Floor(graphicsRange.MaximumInkHz / 1000d);
+                    var effectiveCurve = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(lastIndex - firstIndex + 1);
+                    for (var i = firstIndex; i <= lastIndex; i++)
                     {
-                        var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, i);
-                        var targetFrequencyKhz = stockFrequencyKhz + deltas[i].FrequencyDeltaInkHz;
-                        if (targetFrequencyKhz > anchorTargetKhz)
-                        {
-                            if (currentDeltas[i].PointMode != 0)
-                            {
-                                Log.Instance.Trace($"Voltage cap cannot be enforced because driver point #{i} is not editable.");
-                                return false;
-                            }
+                        if (points[i].VoltageInMicroV == 0)
+                            continue;
 
-                            deltas[i] = new PrivateClockBoostTableV1.GPUDelta(Math.Max(anchorTargetKhz - stockFrequencyKhz, minDeltaKhz));
-                        }
+                        var stockMhz = GetStockFrequencyKhz(points, currentDeltas, i) / 1000;
+                        var targetMhz = (stockMhz * 1000 + deltas[i].FrequencyDeltaInkHz) / 1000;
+                        effectiveCurve.Add(new GPUVoltageCurvePoint(
+                            i,
+                            (int)points[i].VoltageInMilliV,
+                            targetMhz,
+                            stockMhz,
+                            targetMhz - stockMhz,
+                            currentDeltas[i].PointMode == 0,
+                            minimumOffsetMhz,
+                            maximumOffsetMhz));
                     }
+
+                    if (!TryApplyVoltageLimitToCurve(effectiveCurve, voltageMv, out var cappedCurve, out var capError))
+                    {
+                        Log.Instance.Trace(capError);
+                        return false;
+                    }
+
+                    foreach (var point in cappedCurve)
+                    {
+                        var index = point.Index;
+                        var stockFrequencyKhz = GetStockFrequencyKhz(points, currentDeltas, index);
+                        var targetFrequencyKhz = point.FrequencyMhz * 1000;
+                        deltas[index] = new PrivateClockBoostTableV1.GPUDelta(targetFrequencyKhz - stockFrequencyKhz);
+                    }
+
+                    anchorTargetKhz = cappedCurve.First(p => p.Index == anchorIndex).FrequencyMhz * 1000;
+                    flattenedCount = cappedCurve.Count(p => p.Index > anchorIndex && p.IsEditable);
                 }
 
                 var previousFrequencyKhz = int.MinValue;
