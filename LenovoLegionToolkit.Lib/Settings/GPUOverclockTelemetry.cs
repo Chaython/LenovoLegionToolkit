@@ -5,4 +5,5 @@ public sealed record GPUOverclockTelemetry(
     int UtilizationPercent,
     int CoreClockMhz,
     int MemoryClockMhz,
-    int TemperatureCelsius);
+    int TemperatureCelsius,
+    double? CoreVoltageVolts);
