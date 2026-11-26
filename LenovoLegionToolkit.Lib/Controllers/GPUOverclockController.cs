@@ -336,7 +336,6 @@ public class GPUOverclockController
             if (first < 0 || last < first)
                 return [];
 
-            LogCurveRangeDiagnostics(gpu, graphicsRange.Value, points, deltas, structVersion, coreDeltaRangeKhz);
             var result = new global::System.Collections.Generic.List<GPUVoltageCurvePoint>(last - first + 1);
 
             for (var i = first; i <= last; i++)
@@ -1012,37 +1011,6 @@ public class GPUOverclockController
 
             return !offsetsRequested && voltageMv <= 0 && (savedCurve is null || savedCurve.Count == 0);
         }
-    }
-
-    private static void LogCurveRangeDiagnostics(
-        PhysicalGPU gpu,
-        PrivateClockBoostRangesV1.ClockBoostRange graphicsRange,
-        PrivateClientClkVFPointsStatusV1.VFPoint[] points,
-        PrivateClockBoostTableV1.GPUDelta[] deltas,
-        int structVersion,
-        (int Min, int Max) p0RangeKhz)
-    {
-        var first = Math.Max(0, (int)graphicsRange.FirstPointIndex);
-        var last = Math.Min(graphicsRange.LastPointIndex, Math.Min(points.Length, deltas.Length) - 1);
-        if (last < first)
-            return;
-
-        var minTableDeltaKhz = int.MaxValue;
-        var maxTableDeltaKhz = int.MinValue;
-        var editableCount = 0;
-        for (var i = first; i <= last; i++)
-        {
-            if (deltas[i].PointMode != 0)
-                continue;
-
-            editableCount++;
-            minTableDeltaKhz = Math.Min(minTableDeltaKhz, deltas[i].FrequencyDeltaInkHz);
-            maxTableDeltaKhz = Math.Max(maxTableDeltaKhz, deltas[i].FrequencyDeltaInkHz);
-        }
-
-        var rawP0MinKhz = p0RangeKhz.Min;
-        var rawP0MaxKhz = p0RangeKhz.Max;
-        Log.Instance.Trace($"NVAPI V/F limits [gpu={NVAPI.GetGPUId(gpu)}, struct={structVersion}, points={first}..{last}, editable={editableCount}, P0DeltaKhz={rawP0MinKhz}..{rawP0MaxKhz}, P0DeltaMhz={rawP0MinKhz / 1000}..{rawP0MaxKhz / 1000}, BoostAbsoluteKhz={graphicsRange.MinimumInkHz}..{graphicsRange.MaximumInkHz}, CurrentEditableTableDeltaKhz={(editableCount > 0 ? $"{minTableDeltaKhz}..{maxTableDeltaKhz}" : "none")}]");
     }
 
     private const int DefaultCurveStructVersion = 1;
