@@ -451,7 +451,11 @@ public class GPUOverclockController
             var legacyApplied = ApplyPerformanceStates(gpu, coreDeltaMhz * 1000, memoryDeltaMhz * 1000);
             var voltageRequested = info.VoltageLockMv > 0 || info.VoltageCapMv > 0;
 
-            return legacyApplied && !voltageRequested;
+            var customCurveRequested = _settings.Store.VoltageCurve.Count > 0;
+            if (customCurveRequested)
+                Log.Instance.Trace("A custom V/F curve is saved, but this GPU exposes no editable curve interface.");
+
+            return legacyApplied && !voltageRequested && !customCurveRequested;
         }
 
         return ApplyClockCurve(gpu, info, graphicsRange.Value, memoryRange, coreDeltaMhz * 1000, memoryDeltaMhz * 1000, maxCoreDeltaMhz * 1000, _settings.Store.VoltageCurve);
@@ -522,7 +526,7 @@ public class GPUOverclockController
             if (firstIndex >= available || lastIndex >= available)
             {
                 Log.Instance.Trace($"Unexpected V/F curve size: {points.Length} points, {currentDeltas.Length} deltas, graphics range {firstIndex}..{lastIndex}.");
-                return !offsetsRequested && voltageMv <= 0;
+                return !offsetsRequested && voltageMv <= 0 && (savedCurve is null || savedCurve.Count == 0);
             }
 
             var clockMultiplier = structVersion == AdjustedClockCurveStructVersion || graphicsRange.MaximumInkHz != 2 * maxCoreDeltaKhz ? 1 : 2;
@@ -618,6 +622,20 @@ public class GPUOverclockController
 
             GPUApi.SetClockBoostTable(gpu.Handle, new PrivateClockBoostTableV1(deltas), structVersion);
 
+            if (savedCurve is { Count: > 0 })
+            {
+                var appliedDeltas = GPUApi.GetClockBoostTable(gpu.Handle, structVersion).GPUDeltas;
+                foreach (var savedPoint in savedCurve)
+                {
+                    if (savedPoint.Index >= appliedDeltas.Length ||
+                        appliedDeltas[savedPoint.Index].FrequencyDeltaInkHz != deltas[savedPoint.Index].FrequencyDeltaInkHz)
+                    {
+                        Log.Instance.Trace($"NVIDIA driver did not retain the requested V/F point. [index={savedPoint.Index}]");
+                        return false;
+                    }
+                }
+            }
+
             if (anchorIndex >= 0)
                 Log.Instance.Trace($"Flattened V/F curve at point #{anchorIndex} ({points[anchorIndex].VoltageInMilliV} mV, {anchorTargetKhz / (1000 * clockMultiplier)} MHz): {flattenedCount} points, depth {flattenDepthKhz / (1000 * clockMultiplier)} MHz.");
 
@@ -636,7 +654,7 @@ public class GPUOverclockController
         {
             Log.Instance.Trace($"Failed to apply the voltage cap/lock.", ex);
 
-            return !offsetsRequested && voltageMv <= 0;
+            return !offsetsRequested && voltageMv <= 0 && (savedCurve is null || savedCurve.Count == 0);
         }
     }
 
