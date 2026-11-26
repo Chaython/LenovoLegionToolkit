@@ -10,5 +10,6 @@ public class GPUOverclockSettings() : AbstractSettings<GPUOverclockSettingsStore
         public bool Enabled { get; set; }
         public GPUOverclockInfo Info { get; set; } = GPUOverclockInfo.Zero;
         public List<GPUVoltageCurveOffset> VoltageCurve { get; set; } = [];
+        public string? VoltageCurveGpuId { get; set; }
     }
 }
