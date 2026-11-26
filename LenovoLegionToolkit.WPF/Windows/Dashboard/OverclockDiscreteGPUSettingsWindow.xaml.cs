@@ -312,8 +312,8 @@ public partial class OverclockDiscreteGPUSettingsWindow
             }
 
             var temperature = telemetry.TemperatureCelsius >= 0 ? $"{telemetry.TemperatureCelsius} °C" : "N/A";
-            var voltage = telemetry.CoreVoltageVolts is { } coreVoltage
-                ? $"{coreVoltage:F3} V"
+            var voltage = telemetry.CoreVoltageMicrovolts is { } coreVoltage
+                ? $"{coreVoltage:N0} µV"
                 : "N/A";
 
             _curveTelemetry.Text =
